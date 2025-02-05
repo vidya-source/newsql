@@ -18,7 +18,7 @@
         login_user: "root"
         login_password: "mysqlAutomation"
         login_host: "localhost"
-        name: "MYSQLSV"
+        name: "{{ mysql_db }}"
         state: 'query'
         query: "SELECT table_schema, SUM(data_length + index_length) / 1024 / 1024 AS db_size_mb FROM MYSQLSV.tables GROUP BY table_schema;"
       register: db_space_utilization
