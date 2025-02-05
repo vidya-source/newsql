@@ -1,0 +1,46 @@
+---
+- name: Check MySQL Database Space and Health
+  hosts: localhost
+  become: yes  # If needed to use sudo privileges
+  vars:
+    mysql_user: "{{mysql_user}}"
+    mysql_password: "{{ mysql_password }}"  # Use an Ansible variable for security
+
+  tasks:
+    - name: Ensure MySQL client is installed
+      package:
+        name: mysql-client
+        state: present
+
+    - name: Get database space usage via MySQL command
+      command: >
+        mysql -u{{ mysql_user }} -p{{ mysql_password }} -e "SELECT table_schema AS 'Database',
+                        SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' 
+                 FROM MYSQLSV.tables 
+                 GROUP BY table_schema;"
+      register: db_space_output
+
+    - name: Show database sizes
+      debug:
+        msg: "{{ db_space_output.stdout_lines }}"
+
+    - name: Check MySQL service status (Health check)
+      service_facts:
+
+    - name: Verify MySQL is running
+      debug:
+        msg: "MySQL is running"
+      when: ansible_facts.services['mysql'].state == 'running'
+
+    - name: Check MySQL health by running a simple query
+      community.mysql.mysql_query:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        query: "SELECT 1;"
+      register: health_check_result
+      failed_when: health_check_result.query_result is not defined
+
+    - name: Show health check result
+      debug:
+        msg: "MySQL is healthy. Query result: {{ health_check_result.query_result }}"
+      when: health_check_result.query_result is defined
