@@ -1,6 +1,6 @@
 ---
 - name: Check MySQL Database Space and Health
-  hosts: my_servers
+  hosts: localhost
   become: yes  # If needed to use sudo privileges
   vars:
     mysql_user: "{{ mysql_user }}"
