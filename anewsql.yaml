@@ -1,59 +1,75 @@
 ---
-- name: Check MySQL Database Space and Health
-  hosts: localhost
-  become: yes  # If needed to use sudo privileges
+- name: MySQL Server Health Check
+  hosts: mysql_servers
+  become: yes
   vars:
-    mysql_user: "{{ mysql_user }}"
-    mysql_password: "{{ mysql_password }}"  # Use an Ansible variable for security
-    mysql_host: "{{ mysql_host }}"  # Optional: define MySQL host if needed
+    mysql_user: "{{mysql_user}}"
+    mysql_password: "{{mysql_password}}"
+    mysql_db: "{{mysql_db}}"
 
   tasks:
+    - name: Check if MySQL service is running
+      service:
+        name: mysql
+        state: started
 
-    # Ensure MySQL client is installed
-    - name: Ensure MySQL client is installed
-      package:
-        name: mysql-client
-        state: present
-
-    # Get database space usage via MySQL command
-    - name: Get database space usage via MySQL command
-      command: >
-        mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SELECT table_schema AS 'Database',
-                        SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' 
-                 FROM MYSQLSV.tables GROUP BY table_schema;"
-      register: db_space_output
-
-    # Show database sizes
-    - name: Show database sizes
+    - name: Get database space utilization
+      mysql_db:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        query: "SELECT table_schema AS 'Database', SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' FROM information_schema.tables GROUP BY table_schema;"
+      register: db_space
+    - name: Print database space utilization
       debug:
-        msg: "{{ db_space_output.stdout_lines }}"
+        msg: "{{ db_space.stdout }}"
 
-    # Check MySQL server health (uptime and active threads)
-    - name: Check MySQL server health
-      command: mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SHOW GLOBAL STATUS LIKE 'Threads_connected';"
-      register: db_health_status
-      changed_when: false
-
-    - name: Show MySQL server health status
+    - name: Check MySQL status for threads connected
+      mysql_db:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        query: "SHOW STATUS LIKE 'Threads_connected';"
+      register: threads_status
+    - name: Print threads status
       debug:
-        msg: "MySQL Health Status: {{ db_health_status.stdout_lines }}"
+        msg: "{{ threads_status.stdout }}"
 
-    # Check for deadlocks in the InnoDB engine
-    - name: Check for deadlocks in MySQL InnoDB engine
-      command: mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SHOW ENGINE INNODB STATUS\G"
+    - name: Check MySQL uptime
+      mysql_db:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        query: "SHOW GLOBAL STATUS LIKE 'Uptime';"
+      register: uptime_status
+    - name: Print uptime status
+      debug:
+        msg: "{{ uptime_status.stdout }}"
+
+    - name: Check for slow queries log
+      mysql_db:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        query: "SHOW VARIABLES LIKE 'slow_query_log';"
+      register: slow_query_log
+    - name: Print slow query log status
+      debug:
+        msg: "{{ slow_query_log.stdout }}"
+
+    - name: Check for deadlocks
+      mysql_db:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        query: "SHOW ENGINE INNODB STATUS;"
       register: innodb_status
-      changed_when: false
-
-    - name: Show InnoDB status for deadlocks
+    - name: Print innodb status for deadlocks
       debug:
-        msg: "InnoDB Status (Deadlocks): {{ innodb_status.stdout_lines }}"
+        msg: "{{ innodb_status.stdout }}"
 
-    # Check for any running jobs or scheduled events
-    - name: Check for running MySQL jobs/events
-      command: mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SHOW PROCESSLIST;"
-      register: job_activity
-      changed_when: false
-
-    - name: Show running job activities in MySQL
+    - name: Check for MySQL scheduled events
+      mysql_db:
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        query: "SHOW EVENTS;"
+      register: scheduled_events
+    - name: Print scheduled events
       debug:
-        msg: "Current MySQL job activities: {{ job_activity.stdout_lines }}"
+        msg: "{{ scheduled_events.stdout }}"
