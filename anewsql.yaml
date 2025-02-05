@@ -14,62 +14,49 @@
         state: started
 
     - name: Get database space utilization
-      mysql_db:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        query: "SELECT table_schema AS 'Database', SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' FROM information_schema.tables GROUP BY table_schema;"
+      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SELECT table_schema AS \"Database\", SUM(data_length + index_length) / 1024 / 1024 AS \"Size (MB)\" FROM information_schema.tables GROUP BY table_schema;'"
       register: db_space
+      changed_when: false
     - name: Print database space utilization
       debug:
         msg: "{{ db_space.stdout }}"
 
     - name: Check MySQL status for threads connected
-      mysql_db:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: "SHOW STATUS LIKE 'Threads_connected';"
+      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW STATUS LIKE \"Threads_connected\";'"
       register: threads_status
+      changed_when: false
     - name: Print threads status
       debug:
         msg: "{{ threads_status.stdout }}"
 
     - name: Check MySQL uptime
-      mysql_db:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: "SHOW GLOBAL STATUS LIKE 'Uptime';"
+      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW GLOBAL STATUS LIKE \"Uptime\";'"
       register: uptime_status
+      changed_when: false
     - name: Print uptime status
       debug:
         msg: "{{ uptime_status.stdout }}"
 
     - name: Check for slow queries log
-      mysql_db:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: "SHOW VARIABLES LIKE 'slow_query_log';"
+      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW VARIABLES LIKE \"slow_query_log\";'"
       register: slow_query_log
+      changed_when: false
     - name: Print slow query log status
       debug:
         msg: "{{ slow_query_log.stdout }}"
 
     - name: Check for deadlocks
-      mysql_db:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: "SHOW ENGINE INNODB STATUS;"
+      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW ENGINE INNODB STATUS;'"
       register: innodb_status
+      changed_when: false
     - name: Print innodb status for deadlocks
       debug:
         msg: "{{ innodb_status.stdout }}"
 
     - name: Check for MySQL scheduled events
-      mysql_db:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: "SHOW EVENTS;"
+      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW EVENTS;'"
       register: scheduled_events
+      changed_when: false
     - name: Print scheduled events
       debug:
         msg: "{{ scheduled_events.stdout }}"
