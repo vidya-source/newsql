@@ -1,6 +1,6 @@
 ---
 - name: MySQL Server Health Check
-  hosts: mysql_servers
+  hosts: localhost
   become: yes
   vars:
     mysql_user: "{{mysql_user}}"
