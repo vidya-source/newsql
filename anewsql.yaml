@@ -1,21 +1,20 @@
 ---
 - name: Check MySQL Database Space and Health
-  hosts: localhost
-  become: no  # Ensure we do not use sudo for any task on localhost
+  hosts: my_servers
+  become: yes  # If needed to use sudo privileges
   vars:
     mysql_user: "{{ mysql_user }}"
     mysql_password: "{{ mysql_password }}"  # Use an Ansible variable for security
     mysql_host: "{{ mysql_host }}"  # Optional: define MySQL host if needed
-
+ 
   tasks:
-
+ 
     # Ensure MySQL client is installed
     - name: Ensure MySQL client is installed
       package:
         name: mysql-client
         state: present
-      become: no  # No sudo needed here
-
+ 
     # Get database space usage via MySQL command
     - name: Get database space usage via MySQL command
       command: >
@@ -23,42 +22,38 @@
                         SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' 
                  FROM MYSQLSV.tables GROUP BY table_schema;"
       register: db_space_output
-      become: no  # No sudo needed for this task
-
+ 
     # Show database sizes
     - name: Show database sizes
       debug:
         msg: "{{ db_space_output.stdout_lines }}"
-
+ 
     # Check MySQL server health (uptime and active threads)
     - name: Check MySQL server health
       command: mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SHOW GLOBAL STATUS LIKE 'Threads_connected';"
       register: db_health_status
       changed_when: false
-      become: no  # No sudo needed
-
+ 
     - name: Show MySQL server health status
       debug:
         msg: "MySQL Health Status: {{ db_health_status.stdout_lines }}"
-
+ 
     # Check for deadlocks in the InnoDB engine
     - name: Check for deadlocks in MySQL InnoDB engine
       command: mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SHOW ENGINE INNODB STATUS\G"
       register: innodb_status
       changed_when: false
-      become: no  # No sudo needed
-
+ 
     - name: Show InnoDB status for deadlocks
       debug:
         msg: "InnoDB Status (Deadlocks): {{ innodb_status.stdout_lines }}"
-
+ 
     # Check for any running jobs or scheduled events
     - name: Check for running MySQL jobs/events
       command: mysql -u{{ mysql_user }} -p{{ mysql_password }} -h{{ mysql_host }} -e "SHOW PROCESSLIST;"
       register: job_activity
       changed_when: false
-      become: no  # No sudo needed
-
+ 
     - name: Show running job activities in MySQL
       debug:
         msg: "Current MySQL job activities: {{ job_activity.stdout_lines }}"
