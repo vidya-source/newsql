@@ -1,44 +1,25 @@
 ---
-- name: Check MySQL Database Health and Space Utilization
-  hosts: mysql_servers  # Define your target MySQL server group
-  become: true
+- name: Check MySQL Database Space
+  hosts: my_servers
+  become: yes  # If needed to use sudo privileges
+  vars:
+    mysql_user: "{{mysql_user}}"
+    mysql_password: "{{ mysql_password }}"  # Use an Ansible variable for security
+
   tasks:
+    - name: Ensure MySQL client is installed
+      package:
+        name: mysql-client
+        state: present
 
-    - name: Check MySQL server space utilization
-      shell: df -h /var/lib/mysql
-      register: disk_space
-      changed_when: false
+    - name: Get database space usage via MySQL command
+      command: >
+        mysql -u{{ mysql_user }} -p{{ mysql_password }} -e "SELECT table_schema AS 'Database',
+                        SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' 
+                 FROM MYSQLSV.tables 
+                 GROUP BY table_schema;"
+      register: db_space_output
 
-    - name: Print MySQL server disk space
+    - name: Show database sizes
       debug:
-        msg: "Disk space used on MySQL server: {{ disk_space.stdout }}"
-
-    - name: Check MySQL database space utilization
-      mysql_db:
-        login_user: "root"
-        login_password: "mysqlAutomation"
-        login_host: "localhost"
-        name: "{{ mysql_db }}"
-        state: 'query'
-        query: "SELECT table_schema, SUM(data_length + index_length) / 1024 / 1024 AS db_size_mb FROM MYSQLSV.tables GROUP BY table_schema;"
-      register: db_space_utilization
-      changed_when: false
-
-    - name: Print database space utilization
-      debug:
-        msg: "Database space utilization: {{ db_space_utilization.stdout }}"
-
-    - name: Check MySQL database health status
-      mysql_db:
-        login_user: "root"
-        login_password: "mysqlAutomation"
-        login_host: "localhost"
-        name: "MYSQLSV"
-        state: 'query'
-        query: "SHOW GLOBAL STATUS LIKE 'Threads_connected';"
-      register: db_health_status
-      changed_when: false
-
-    - name: Print MySQL health status
-      debug:
-        msg: "Current MySQL server health status: {{ db_health_status.stdout }}"
+        msg: "{{ db_space_output.stdout_lines }}"
