@@ -16,8 +16,7 @@
       command: >
         mysql -u{{ mysql_user }} -p{{ mysql_password }} -e "SELECT table_schema AS 'Database',
                         SUM(data_length + index_length) / 1024 / 1024 AS 'Size (MB)' 
-                 FROM MYSQLSV.tables 
-                 GROUP BY table_schema;"
+                 FROM MYSQLSV.tables;"
       register: db_space_output
 
     - name: Show database sizes
