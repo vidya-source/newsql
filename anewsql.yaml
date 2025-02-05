@@ -1,12 +1,18 @@
 ---
 - name: Check MySQL Database Space and Health
-  hosts: localhost
+  hosts: your_mysql_hosts
   become: yes  # If needed to use sudo privileges
   vars:
     mysql_user: "{{mysql_user}}"
     mysql_password: "{{ mysql_password }}"  # Use an Ansible variable for security
 
   tasks:
+    - name: Install community.mysql collection
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.mysql
+      become: yes  # Ensure the command runs as root or with sudo privileges (if required)
+      when: ansible_facts.packages['ansible'] is defined  # Ensure this only runs once on the first playbook run
+
     - name: Ensure MySQL client is installed
       package:
         name: mysql-client
