@@ -11,13 +11,14 @@
 
   tasks:
     - name: Check MySQL Database Space Utilization
-      community.mysql.mysql_query:
+      community.mysql.mysql_db:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: |
+        state: "query"
+        sql: |
           SELECT table_schema AS 'Database',
                  ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)'
           FROM information_schema.tables
@@ -29,13 +30,14 @@
         var: db_space
 
     - name: Check MySQL DB Health (Server Status)
-      community.mysql.mysql_query:
+      community.mysql.mysql_db:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: |
+        state: "query"
+        sql: |
           SHOW STATUS WHERE `variable_name` = 'Uptime';
       register: db_health
 
@@ -44,13 +46,14 @@
         var: db_health
 
     - name: Check for Deadlocks in MySQL
-      community.mysql.mysql_query:
+      community.mysql.mysql_db:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: |
+        state: "query"
+        sql: |
           SHOW ENGINE INNODB STATUS;
       register: deadlocks
 
@@ -59,13 +62,14 @@
         var: deadlocks
 
     - name: Check Active Jobs (Running Queries)
-      community.mysql.mysql_query:
+      community.mysql.mysql_db:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: |
+        state: "query"
+        sql: |
           SHOW FULL PROCESSLIST;
       register: active_jobs
 
