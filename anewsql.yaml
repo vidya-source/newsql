@@ -1,62 +1,87 @@
 ---
 - name: MySQL Server Health Check
-  hosts: my_servers
-  become: yes
+  hosts: localhost
+  gather_facts: no
   vars:
+    mysql_host: "{{mysql_host}}"
     mysql_user: "{{mysql_user}}"
     mysql_password: "{{mysql_password}}"
     mysql_db: "{{mysql_db}}"
+    mysql_port: "{{mysql_port}}"
 
   tasks:
-    - name: Check if MySQL service is running
-      service:
-        name: mysql
-        state: started
 
-    - name: Get database space utilization
-      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SELECT table_schema AS \"Database\", SUM(data_length + index_length) / 1024 / 1024 AS \"Size (MB)\" FROM information_schema.tables GROUP BY table_schema;'"
+    - name: Check MySQL database space utilization
+      community.mysql.mysql_db:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        query: |
+          SELECT table_schema AS DatabaseName,
+                 SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
+          FROM information_schema.tables
+          GROUP BY table_schema;
       register: db_space
-      changed_when: false
-    - name: Print database space utilization
-      debug:
-        msg: "{{ db_space.stdout }}"
 
-    - name: Check MySQL status for threads connected
-      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW STATUS LIKE \"Threads_connected\";'"
-      register: threads_status
-      changed_when: false
-    - name: Print threads status
+    - name: Display database space utilization
       debug:
-        msg: "{{ threads_status.stdout }}"
+        msg: |
+          {% for row in db_space.query_result %}
+          - {{ row.DatabaseName }}: {{ row.TotalSizeMB }} MB
+          {% endfor %}
 
-    - name: Check MySQL uptime
-      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW GLOBAL STATUS LIKE \"Uptime\";'"
-      register: uptime_status
-      changed_when: false
-    - name: Print uptime status
-      debug:
-        msg: "{{ uptime_status.stdout }}"
+    - name: Check for deadlocks in MySQL
+      community.mysql.mysql_db:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        query: "SHOW ENGINE INNODB STATUS;"
+      register: deadlocks
 
-    - name: Check for slow queries log
-      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW VARIABLES LIKE \"slow_query_log\";'"
-      register: slow_query_log
-      changed_when: false
-    - name: Print slow query log status
+    - name: Display deadlocks status
       debug:
-        msg: "{{ slow_query_log.stdout }}"
+        msg: |
+          {% if "LATEST DETECTED DEADLOCK" in deadlocks.query_result[0]['Status'] %}
+            Deadlock detected: {{ deadlocks.query_result[0]['Status'] }}
+          {% else %}
+            No deadlocks detected
+          {% endif %}
 
-    - name: Check for deadlocks
-      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW ENGINE INNODB STATUS;'"
-      register: innodb_status
-      changed_when: false
-    - name: Print innodb status for deadlocks
-      debug:
-        msg: "{{ innodb_status.stdout }}"
+    - name: Check MySQL event scheduler activities
+      community.mysql.mysql_db:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        query: |
+          SELECT event_name, status
+          FROM information_schema.events
+          WHERE status = 'ENABLED';
+      register: job_activities
 
-    - name: Check for MySQL scheduled events
-      command: "mysql -u {{ mysql_user }} -p{{ mysql_password }} -e 'SHOW EVENTS;'"
-      register: scheduled_events
-      changed_when: false
-    - name: Print scheduled events
+    - name: Display event scheduler activities
       debug:
-        msg: "{{ scheduled_events.stdout }}"
+        msg: |
+          {% if job_activities.query_result %}
+            {% for event in job_activities.query_result %}
+            - Event: {{ event.event_name }} | Status: {{ event.status }}
+            {% endfor %}
+          {% else %}
+            No active events found.
+          {% endif %}
+
+    - name: Check MySQL database health (Active connections)
+      community.mysql.mysql_db:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        query: "SHOW STATUS LIKE 'Threads_connected';"
+      register: db_health
+
+    - name: Display database health status
+      debug:
+        msg: |
+          Active Connections: {{ db_health.query_result[0]['Value'] }}
