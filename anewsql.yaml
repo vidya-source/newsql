@@ -48,7 +48,7 @@
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: "SHOW ENGINE INNODB STATUS \G"
+        query: "SHOW ENGINE INNODB STATUS;"
       register: deadlocks
 
     - name: Display Deadlocks Information
