@@ -11,7 +11,7 @@
 
   tasks:
     - name: Check MySQL Database Space Utilization
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
@@ -28,7 +28,7 @@
         var: db_space
 
     - name: Check MySQL DB Health (Server Status)
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
@@ -42,7 +42,7 @@
         var: db_health
 
     - name: Check for Deadlocks in MySQL
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
@@ -56,7 +56,7 @@
         var: deadlocks
 
     - name: Check Active Jobs (Running Queries)
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
