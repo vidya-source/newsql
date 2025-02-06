@@ -1,6 +1,7 @@
 ---
 - name: MySQL Server Health Check
   hosts: localhost
+  become: true
   gather_facts: no
   vars:
     mysql_host: "{{mysql_host}}"
@@ -10,78 +11,65 @@
     mysql_port: "{{mysql_port}}"
 
   tasks:
-
     - name: Check MySQL database space utilization
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        query: |
-          SELECT table_schema AS DatabaseName,
-                 SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
-          FROM information_schema.tables
-          GROUP BY table_schema;
+      shell: |
+        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "
+        SELECT table_schema AS DatabaseName,
+               SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
+        FROM information_schema.tables
+        GROUP BY table_schema;"
       register: db_space
+      changed_when: false
 
     - name: Display database space utilization
       debug:
         msg: |
-          {% for row in db_space.query_result %}
-          - {{ row.DatabaseName }}: {{ row.TotalSizeMB }} MB
+          {% for row in db_space.stdout_lines[1:] %}
+          - {{ row.split("\t")[0] }}: {{ row.split("\t")[1] }} MB
           {% endfor %}
 
     - name: Check for deadlocks in MySQL
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        query: "SHOW ENGINE INNODB STATUS;"
+      shell: |
+        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "SHOW ENGINE INNODB STATUS;"
       register: deadlocks
+      changed_when: false
 
     - name: Display deadlocks status
       debug:
         msg: |
-          {% if "LATEST DETECTED DEADLOCK" in deadlocks.query_result[0]['Status'] %}
-            Deadlock detected: {{ deadlocks.query_result[0]['Status'] }}
+          {% if "LATEST DETECTED DEADLOCK" in deadlocks.stdout %}
+            Deadlock detected: {{ deadlocks.stdout | regex_search('LATEST DETECTED DEADLOCK.*') }}
           {% else %}
             No deadlocks detected
           {% endif %}
 
     - name: Check MySQL event scheduler activities
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        query: |
-          SELECT event_name, status
-          FROM information_schema.events
-          WHERE status = 'ENABLED';
+      shell: |
+        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "
+        SELECT event_name, status
+        FROM information_schema.events
+        WHERE status = 'ENABLED';"
       register: job_activities
+      changed_when: false
 
     - name: Display event scheduler activities
       debug:
         msg: |
-          {% if job_activities.query_result %}
-            {% for event in job_activities.query_result %}
-            - Event: {{ event.event_name }} | Status: {{ event.status }}
+          {% if job_activities.stdout_lines | length > 1 %}
+            {% for event in job_activities.stdout_lines[1:] %}
+            - Event: {{ event.split("\t")[0] }} | Status: {{ event.split("\t")[1] }}
             {% endfor %}
           {% else %}
             No active events found.
           {% endif %}
 
     - name: Check MySQL database health (Active connections)
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        query: "SHOW STATUS LIKE 'Threads_connected';"
+      shell: |
+        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "SHOW STATUS LIKE 'Threads_connected';"
       register: db_health
+      changed_when: false
 
     - name: Display database health status
       debug:
         msg: |
-          Active Connections: {{ db_health.query_result[0]['Value'] }}
+          Active Connections: {{ db_health.stdout_lines[1].split("\t")[1] }}
