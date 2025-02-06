@@ -3,11 +3,11 @@
   hosts: localhost
   become: no
   vars:
-    mysql_host: "20.55.88.203"
-    mysql_user: "mysqlauto"
-    mysql_password: "mysqlAutomation"
-    mysql_db: "information_schema"
-    mysql_port: 3306
+    mysql_host: "{{mysql_host}}"
+    mysql_user: "{{mysql_user}}"
+    mysql_password: "{{mysql_password}}"
+    mysql_db: "{{mysql_db}}"
+    mysql_port: "{{mysql_port}}"
 
   tasks:
     - name: Check MySQL Database Space Utilization
