@@ -17,10 +17,11 @@
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: "SELECT table_schema AS 'Database', 
-                        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)' 
-                 FROM information_schema.tables 
-                 GROUP BY table_schema;"
+        query: |
+          SELECT table_schema AS 'Database',
+                 ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)'
+          FROM information_schema.tables
+          GROUP BY table_schema;
       register: db_space
 
     - name: Display MySQL DB Space Utilization
@@ -34,7 +35,8 @@
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: "SHOW STATUS WHERE `variable_name` = 'Uptime';"
+        query: |
+          SHOW STATUS WHERE `variable_name` = 'Uptime';
       register: db_health
 
     - name: Display MySQL DB Health
@@ -48,7 +50,8 @@
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: "SHOW ENGINE INNODB STATUS;"
+        query: |
+          SHOW ENGINE INNODB STATUS;
       register: deadlocks
 
     - name: Display Deadlocks Information
@@ -62,7 +65,8 @@
         login_password: "{{ mysql_password }}"
         db: "{{ mysql_db }}"
         port: "{{ mysql_port }}"
-        query: "SHOW FULL PROCESSLIST;"
+        query: |
+          SHOW FULL PROCESSLIST;
       register: active_jobs
 
     - name: Display Active Jobs
