@@ -1,74 +1,70 @@
 ---
-- name: MySQL Server Health Check
+- name: MySQL Database Health Check
   hosts: localhost
-  gather_facts: no
+  become: no
   vars:
-    mysql_host: "{{mysql_host}}"
-    mysql_user: "{{mysql_user}}"
-    mysql_password: "{{mysql_password}}"
-    mysql_db: "{{mysql_db}}"
-    mysql_port: "{{mysql_port}}"
+    mysql_host: "20.55.88.203"
+    mysql_user: "mysqlauto"
+    mysql_password: "mysqlAutomation"
+    mysql_db: "information_schema"
+    mysql_port: 3306
 
   tasks:
-    - name: Check MySQL database space utilization
-      shell: |
-        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "
-        SELECT table_schema AS DatabaseName,
-               SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
-        FROM information_schema.tables
-        GROUP BY table_schema;"
+    - name: Check MySQL Database Space Utilization
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        port: "{{ mysql_port }}"
+        query: "SELECT table_schema AS 'Database', 
+                        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)' 
+                 FROM information_schema.tables 
+                 GROUP BY table_schema;"
       register: db_space
-      changed_when: false
 
-    - name: Display database space utilization
+    - name: Display MySQL DB Space Utilization
       debug:
-        msg: |
-          {% for row in db_space.stdout_lines[1:] %}
-          - {{ row.split("\t")[0] }}: {{ row.split("\t")[1] }} MB
-          {% endfor %}
+        var: db_space
 
-    - name: Check for deadlocks in MySQL
-      shell: |
-        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "SHOW ENGINE INNODB STATUS;"
-      register: deadlocks
-      changed_when: false
-
-    - name: Display deadlocks status
-      debug:
-        msg: |
-          {% if "LATEST DETECTED DEADLOCK" in deadlocks.stdout %}
-            Deadlock detected: {{ deadlocks.stdout | regex_search('LATEST DETECTED DEADLOCK.*') }}
-          {% else %}
-            No deadlocks detected
-          {% endif %}
-
-    - name: Check MySQL event scheduler activities
-      shell: |
-        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "
-        SELECT event_name, status
-        FROM information_schema.events
-        WHERE status = 'ENABLED';"
-      register: job_activities
-      changed_when: false
-
-    - name: Display event scheduler activities
-      debug:
-        msg: |
-          {% if job_activities.stdout_lines | length > 1 %}
-            {% for event in job_activities.stdout_lines[1:] %}
-            - Event: {{ event.split("\t")[0] }} | Status: {{ event.split("\t")[1] }}
-            {% endfor %}
-          {% else %}
-            No active events found.
-          {% endif %}
-
-    - name: Check MySQL database health (Active connections)
-      shell: |
-        mysql -h "{{ mysql_host }}" -u "{{ mysql_user }}" -p"{{ mysql_password }}" -D "{{ mysql_db }}" -e "SHOW STATUS LIKE 'Threads_connected';"
+    - name: Check MySQL DB Health (Server Status)
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        port: "{{ mysql_port }}"
+        query: "SHOW STATUS WHERE `variable_name` = 'Uptime';"
       register: db_health
-      changed_when: false
 
-    - name: Display database health status
+    - name: Display MySQL DB Health
       debug:
-        msg: |
-          Active Connections: {{ db_health.stdout_lines[1].split("\t")[1] }}
+        var: db_health
+
+    - name: Check for Deadlocks in MySQL
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        port: "{{ mysql_port }}"
+        query: "SHOW ENGINE INNODB STATUS \G"
+      register: deadlocks
+
+    - name: Display Deadlocks Information
+      debug:
+        var: deadlocks
+
+    - name: Check Active Jobs (Running Queries)
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        db: "{{ mysql_db }}"
+        port: "{{ mysql_port }}"
+        query: "SHOW FULL PROCESSLIST;"
+      register: active_jobs
+
+    - name: Display Active Jobs
+      debug:
+        var: active_jobs
