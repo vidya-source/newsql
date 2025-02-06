@@ -1,7 +1,6 @@
 ---
 - name: MySQL Server Health Check
   hosts: localhost
-  become: true
   gather_facts: no
   vars:
     mysql_host: "{{mysql_host}}"
