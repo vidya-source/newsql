@@ -3,7 +3,7 @@
   hosts: 10.112.0.10
   gather_facts: no
   vars:
-    mysql_host: "10.112.0.10"
+    mysql_host: "{{mysql_host}}"
     mysql_user: "{{mysql_user}}"
     mysql_password: "{{mysql_password}}"
  
