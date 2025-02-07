@@ -10,6 +10,18 @@
     mysql_port: "3306"
 
   tasks:
+    - name: Install MySQL client (Debian/Ubuntu)
+      apt:
+        name: mysql-client
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Install MySQL client (CentOS/RHEL)
+      yum:
+        name: mysql
+        state: present
+      when: ansible_os_family == "RedHat"
+
     - name: Check database space utilization
       shell: |
         mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
