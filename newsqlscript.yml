@@ -1,7 +1,7 @@
 ---
 - name: MySQL Health Check and Monitoring
   hosts: localhost
-  gather_facts: yes
+  gather_facts: yes  # Enable fact gathering
   vars:
     mysql_host: "10.112.0.11"
     mysql_database: "information_schema"
@@ -15,12 +15,14 @@
         name: mysql-client
         state: present
       when: ansible_os_family == "Debian"
+      become: yes  # Run with elevated privileges
 
     - name: Install MySQL client (CentOS/RHEL)
       yum:
         name: mysql
         state: present
       when: ansible_os_family == "RedHat"
+      become: yes  # Run with elevated privileges
 
     - name: Check database space utilization
       shell: |
