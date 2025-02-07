@@ -1,70 +1,79 @@
 ---
-- name: MySQL Database Health Check
+- name: MySQL Health Check and Monitoring
   hosts: localhost
-  connection: local
+  gather_facts: no
   vars:
-    mysql_user: "mysqlauto"
+    mysql_host: "20.55.88.203"
+    mysql_database: "information_schema"
+    mysql_username: "mysqlauto"
     mysql_password: "mysqlAutomation"
-    mysql_host: "10.112.0.11"
-    mysql_db: "information_schema"
+    mysql_port: "3306"
 
   tasks:
-    - name: Check Database Space
-      ansible.builtin.command:
-        cmd: >
-          mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
-          SELECT table_schema AS 'Database', 
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)' 
-          FROM information_schema.TABLES 
-          GROUP BY table_schema;"
+    - name: Connect to MySQL and check database space utilization
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_username }}"
+        login_password: "{{ mysql_password }}"
+        login_db: "{{ mysql_database }}"
+        query: |
+          SELECT table_schema AS DatabaseName,
+                 SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
+          FROM information_schema.tables
+          GROUP BY table_schema;
       register: db_space
 
-    - name: Display Database Space
+    - name: Display database space utilization
       debug:
-        var: db_space.stdout
+        msg: "📊 Database Space Utilization: {{ db_space.results }}"
 
-    - name: Check Database Utilization
-      ansible.builtin.command:
-        cmd: >
-          mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
-          SHOW STATUS LIKE 'Threads_connected';
-          SHOW STATUS LIKE 'Queries';
-          SHOW STATUS LIKE 'Innodb_row_lock%';"
-      register: db_utilization
-
-    - name: Display Database Utilization
-      debug:
-        var: db_utilization.stdout
-
-    - name: Check Database Health
-      ansible.builtin.command:
-        cmd: >
-          mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
-          SHOW ENGINE INNODB STATUS;"
-      register: db_health
-
-    - name: Display Database Health
-      debug:
-        var: db_health.stdout
-
-    - name: Check for Deadlocks
-      ansible.builtin.command:
-        cmd: >
-          mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
-          SHOW ENGINE INNODB STATUS;"
+    - name: Check for deadlocks in MySQL
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_username }}"
+        login_password: "{{ mysql_password }}"
+        login_db: "{{ mysql_database }}"
+        query: "SHOW ENGINE INNODB STATUS;"
       register: deadlocks
 
-    - name: Display Deadlocks
+    - name: Display deadlock information
       debug:
-        var: deadlocks.stdout
+        msg: "🚨 Deadlocks: {{ deadlocks.results }}"
 
-    - name: Check for Job Activities
-      ansible.builtin.command:
-        cmd: >
-          mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
-          SELECT * FROM information_schema.EVENTS;"
+    - name: Check MySQL event scheduler activities
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_username }}"
+        login_password: "{{ mysql_password }}"
+        login_db: "{{ mysql_database }}"
+        query: |
+          SELECT event_name, status
+          FROM information_schema.events
+          WHERE status = 'ENABLED';
       register: job_activities
 
-    - name: Display Job Activities
+    - name: Display MySQL event activities
       debug:
-        var: job_activities.stdout
+        msg: "🛠 MySQL Event Activities: {{ job_activities.results }}"
+
+    - name: Check MySQL health status
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_username }}"
+        login_password: "{{ mysql_password }}"
+        login_db: "{{ mysql_database }}"
+        query: "SHOW STATUS LIKE 'Threads_connected';"
+      register: db_health
+
+    - name: Display database health check
+      debug:
+        msg: "🩺 Database Health Check: {{ db_health.results }}"
+
+    - name: Execute remote command to check MySQL version via SSH
+      shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} -e 'SELECT VERSION();'
+      register: mysql_version
+
+    - name: Display MySQL version (via SSH)
+      debug:
+        msg: "[ℹ️] MySQL Version (via SSH): {{ mysql_version.stdout }}"
