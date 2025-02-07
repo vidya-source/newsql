@@ -3,7 +3,7 @@
   hosts: 20.55.88.203
   gather_facts: no
   vars:
-    mysql_host: "{{myql_host}}"
+    mysql_host: "{{mysql_host}}"
     mysql_user: "{{mysql_user}}"
     mysql_password: "{{mysql_password}}"
     mysql_database: "{{mysql_database}}"
@@ -11,50 +11,26 @@
 
   tasks:
     - name: Get Database Space Utilization
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        login_port: "{{ mysql_port }}"
-        db: "{{ mysql_database }}"
-        state: present
-        query: "SELECT table_schema AS DatabaseName, SUM(data_length + index_length) / 1024 / 1024 AS SizeMB FROM information_schema.tables WHERE table_schema != 'information_schema' GROUP BY table_schema;"
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -D {{ mysql_database }} -e "SELECT table_schema AS DatabaseName, SUM(data_length + index_length) / 1024 / 1024 AS SizeMB FROM information_schema.tables WHERE table_schema != 'information_schema' GROUP BY table_schema;"
       register: db_space
       ignore_errors: yes
 
     - name: Get Database Health
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        login_port: "{{ mysql_port }}"
-        db: "{{ mysql_database }}"
-        state: present
-        query: "SELECT schema_name, default_character_set_name, default_collation_name FROM information_schema.schemata;"
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -D {{ mysql_database }} -e "SELECT schema_name, default_character_set_name, default_collation_name FROM information_schema.schemata;"
       register: db_health
       ignore_errors: yes
 
     - name: Check for Deadlocks
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        login_port: "{{ mysql_port }}"
-        db: "{{ mysql_database }}"
-        state: present
-        query: "SHOW ENGINE INNODB STATUS;"
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -D {{ mysql_database }} -e "SHOW ENGINE INNODB STATUS;"
       register: deadlocks
       ignore_errors: yes
 
     - name: Get MySQL Process List
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        login_port: "{{ mysql_port }}"
-        db: "{{ mysql_database }}"
-        state: present
-        query: "SHOW PROCESSLIST;"
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -D {{ mysql_database }} -e "SHOW PROCESSLIST;"
       register: process_list
       ignore_errors: yes
 
