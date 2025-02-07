@@ -9,6 +9,24 @@
     mysql_port: 3306
 
   tasks:
+    - name: Install MySQL Client
+      package:
+        name: mysql-client
+        state: present
+      become: yes
+      when: ansible_os_family == 'Debian'  # Adjust according to your OS
+      notify:
+        - Restart mysql service (if needed)
+
+    - name: Install jq
+      package:
+        name: jq
+        state: present
+      become: yes
+      when: ansible_os_family == 'Debian'  # Adjust according to your OS
+      notify:
+        - Restart mysql service (if needed)
+
     - name: Get Database Space Utilization
       shell: |
         query="SELECT table_schema AS DatabaseName,
@@ -89,3 +107,11 @@
           {% else %}
             [❌] No database health data available.
           {% endif %}
+
+  handlers:
+    - name: Restart mysql service (if needed)
+      service:
+        name: mysql
+        state: restarted
+      become: yes
+      when: ansible_os_family == 'Debian'  # Adjust according to your OS
