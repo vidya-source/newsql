@@ -1,77 +1,189 @@
 ---
 - name: MySQL Health Check and Monitoring
   hosts: localhost
-  gather_facts: yes  # Enable fact gathering
+  gather_facts: no  # Disable fact gathering
   vars:
     mysql_host: "10.112.0.11"
     mysql_database: "information_schema"
-    mysql_username: "root"
+    mysql_username: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_port: "3306"
 
   tasks:
-    - name: Install MySQL client (Debian/Ubuntu)
-      apt:
-        name: mysql-client
+    - name: Install mysql-connector-python (if not already installed)
+      pip:
+        name: mysql-connector-python
         state: present
-      when: ansible_os_family == "Debian"
-      become: yes  # Run with elevated privileges
-
-    - name: Install MySQL client (CentOS/RHEL)
-      yum:
-        name: mysql
-        state: present
-      when: ansible_os_family == "RedHat"
-      become: yes  # Run with elevated privileges
+      become: no  # Run without elevated privileges
 
     - name: Check database space utilization
-      shell: |
-        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
-          SELECT table_schema AS DatabaseName,
-                 SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
-          FROM information_schema.tables
-          GROUP BY table_schema;"
+      script: |
+        #!/usr/bin/env python3
+        import mysql.connector
+
+        # MySQL connection
+        conn = mysql.connector.connect(
+            host="{{ mysql_host }}",
+            user="{{ mysql_username }}",
+            password="{{ mysql_password }}",
+            database="{{ mysql_database }}"
+        )
+        cursor = conn.cursor()
+
+        # Query to check database space utilization
+        query = """
+        SELECT table_schema AS DatabaseName,
+               SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
+        FROM information_schema.tables
+        GROUP BY table_schema;
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+
+        # Print results
+        print("📊 Database Space Utilization:")
+        for row in results:
+            print(f" - {row[0]}: {row[1]} MB")
+
+        cursor.close()
+        conn.close()
       register: db_space
 
     - name: Display database space utilization
       debug:
-        msg: "📊 Database Space Utilization: {{ db_space.stdout }}"
+        msg: "{{ db_space.stdout }}"
 
     - name: Check for deadlocks in MySQL
-      shell: |
-        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "SHOW ENGINE INNODB STATUS;"
+      script: |
+        #!/usr/bin/env python3
+        import mysql.connector
+
+        # MySQL connection
+        conn = mysql.connector.connect(
+            host="{{ mysql_host }}",
+            user="{{ mysql_username }}",
+            password="{{ mysql_password }}",
+            database="{{ mysql_database }}"
+        )
+        cursor = conn.cursor()
+
+        # Query to check for deadlocks
+        query = "SHOW ENGINE INNODB STATUS;"
+        cursor.execute(query)
+        result = cursor.fetchone()
+
+        # Print results
+        print("🚨 Deadlocks:")
+        if result and "LATEST DETECTED DEADLOCK" in result[0]:
+            print(f" - Deadlock detected: {result[0]}")
+        else:
+            print(" - No deadlocks detected")
+
+        cursor.close()
+        conn.close()
       register: deadlocks
 
     - name: Display deadlock information
       debug:
-        msg: "🚨 Deadlocks: {{ deadlocks.stdout }}"
+        msg: "{{ deadlocks.stdout }}"
 
     - name: Check MySQL event scheduler activities
-      shell: |
-        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
-          SELECT event_name, status
-          FROM information_schema.events
-          WHERE status = 'ENABLED';"
+      script: |
+        #!/usr/bin/env python3
+        import mysql.connector
+
+        # MySQL connection
+        conn = mysql.connector.connect(
+            host="{{ mysql_host }}",
+            user="{{ mysql_username }}",
+            password="{{ mysql_password }}",
+            database="{{ mysql_database }}"
+        )
+        cursor = conn.cursor()
+
+        # Query to check event scheduler activities
+        query = """
+        SELECT event_name, status
+        FROM information_schema.events
+        WHERE status = 'ENABLED';
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+
+        # Print results
+        print("🛠 MySQL Event Activities:")
+        if results:
+            for row in results:
+                print(f" - Event: {row[0]} | Status: {row[1]}")
+        else:
+            print(" - No active events found.")
+
+        cursor.close()
+        conn.close()
       register: job_activities
 
     - name: Display MySQL event activities
       debug:
-        msg: "🛠 MySQL Event Activities: {{ job_activities.stdout }}"
+        msg: "{{ job_activities.stdout }}"
 
     - name: Check MySQL health status
-      shell: |
-        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "SHOW STATUS LIKE 'Threads_connected';"
+      script: |
+        #!/usr/bin/env python3
+        import mysql.connector
+
+        # MySQL connection
+        conn = mysql.connector.connect(
+            host="{{ mysql_host }}",
+            user="{{ mysql_username }}",
+            password="{{ mysql_password }}",
+            database="{{ mysql_database }}"
+        )
+        cursor = conn.cursor()
+
+        # Query to check MySQL health status
+        query = "SHOW STATUS LIKE 'Threads_connected';"
+        cursor.execute(query)
+        result = cursor.fetchone()
+
+        # Print results
+        print("🩺 Database Health Check:")
+        if result:
+            print(f" - Active Connections: {result[1]}")
+
+        cursor.close()
+        conn.close()
       register: db_health
 
     - name: Display database health check
       debug:
-        msg: "🩺 Database Health Check: {{ db_health.stdout }}"
+        msg: "{{ db_health.stdout }}"
 
-    - name: Execute remote command to check MySQL version via SSH
-      shell: |
-        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} -e 'SELECT VERSION();'
+    - name: Check MySQL version
+      script: |
+        #!/usr/bin/env python3
+        import mysql.connector
+
+        # MySQL connection
+        conn = mysql.connector.connect(
+            host="{{ mysql_host }}",
+            user="{{ mysql_username }}",
+            password="{{ mysql_password }}"
+        )
+        cursor = conn.cursor()
+
+        # Query to check MySQL version
+        query = "SELECT VERSION();"
+        cursor.execute(query)
+        result = cursor.fetchone()
+
+        # Print results
+        print("[ℹ️] MySQL Version:")
+        print(f" - {result[0]}")
+
+        cursor.close()
+        conn.close()
       register: mysql_version
 
-    - name: Display MySQL version (via SSH)
+    - name: Display MySQL version
       debug:
-        msg: "[ℹ️] MySQL Version (via SSH): {{ mysql_version.stdout }}"
+        msg: "{{ mysql_version.stdout }}"
