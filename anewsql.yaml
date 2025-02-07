@@ -1,78 +1,41 @@
 ---
-- name: MySQL Database Health Check
-  hosts: localhost
-  become: no
+- name: Check MySQL Server Health
+  hosts: 10.112.0.10
+  gather_facts: no
   vars:
-    mysql_host: "{{mysql_host}}"
+    mysql_host: "10.112.0.10"
     mysql_user: "{{mysql_user}}"
     mysql_password: "{{mysql_password}}"
-    mysql_db: "{{mysql_db}}"
-    mysql_port: "{{mysql_port}}"
-
+ 
   tasks:
-    - name: Check MySQL Database Space Utilization
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        port: "{{ mysql_port }}"
-        state: "query"
-        sql: |
-          SELECT table_schema AS 'Database',
-                 ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)'
-          FROM information_schema.tables
-          GROUP BY table_schema;
+    - name: Get Database Space Utilization
+      ansible.builtin.shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "SELECT table_schema AS DatabaseName, SUM(data_length + index_length) / 1024 / 1024 AS SizeMB FROM information_schema.tables GROUP BY table_schema;"
       register: db_space
+      ignore_errors: yes
 
-    - name: Display MySQL DB Space Utilization
-      debug:
-        var: db_space
-
-    - name: Check MySQL DB Health (Server Status)
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        port: "{{ mysql_port }}"
-        state: "query"
-        sql: |
-          SHOW STATUS WHERE `variable_name` = 'Uptime';
+    - name: Get Database Health
+      ansible.builtin.shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "SHOW DATABASES;"
       register: db_health
+      ignore_errors: yes
 
-    - name: Display MySQL DB Health
-      debug:
-        var: db_health
-
-    - name: Check for Deadlocks in MySQL
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        port: "{{ mysql_port }}"
-        state: "query"
-        sql: |
-          SHOW ENGINE INNODB STATUS;
+    - name: Check for Deadlocks
+      ansible.builtin.shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "SHOW ENGINE INNODB STATUS\G" | grep -A 20 'LATEST DETECTED DEADLOCK'
       register: deadlocks
+      ignore_errors: yes
 
-    - name: Display Deadlocks Information
+    - name: Get MySQL Process List
+      ansible.builtin.shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "SHOW FULL PROCESSLIST;"
+      register: process_list
+      ignore_errors: yes
+
+    - name: Display Results
       debug:
-        var: deadlocks
-
-    - name: Check Active Jobs (Running Queries)
-      community.mysql.mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        db: "{{ mysql_db }}"
-        port: "{{ mysql_port }}"
-        state: "query"
-        sql: |
-          SHOW FULL PROCESSLIST;
-      register: active_jobs
-
-    - name: Display Active Jobs
-      debug:
-        var: active_jobs
+        msg:
+          - "Database Space Utilization: {{ db_space.stdout | default('No output') }}"
+          - "Database Health: {{ db_health.stdout | default('No output') }}"
+          - "Deadlocks: {{ deadlocks.stdout | default('No output') }}"
+          - "MySQL Process List: {{ process_list.stdout | default('No output') }}"
