@@ -17,7 +17,7 @@
         state: present
 
     - name: Check MySQL Database Space Utilization
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -35,7 +35,7 @@
         msg: "{{ db_space_result.results }}"
 
     - name: Check for Deadlocks
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -54,7 +54,7 @@
           {% endif %}
 
     - name: Check MySQL Event Activities
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -79,7 +79,7 @@
           {% endif %}
 
     - name: Check MySQL Database Health (Threads Connected)
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
