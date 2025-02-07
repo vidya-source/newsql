@@ -11,7 +11,7 @@
 
   tasks:
     - name: Connect to MySQL and check database space utilization
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -28,7 +28,7 @@
         msg: "📊 Database Space Utilization: {{ db_space.results }}"
 
     - name: Check for deadlocks in MySQL
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -41,7 +41,7 @@
         msg: "🚨 Deadlocks: {{ deadlocks.results }}"
 
     - name: Check MySQL event scheduler activities
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -57,7 +57,7 @@
         msg: "🛠 MySQL Event Activities: {{ job_activities.results }}"
 
     - name: Check MySQL health status
-      mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
