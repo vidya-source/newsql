@@ -1,6 +1,6 @@
 ---
 - name: MySQL Database Health Check
-  hosts: dbservers
+  hosts: localhost
   remote_user: root
   vars:
     mysql_user: "mysqlauto"
