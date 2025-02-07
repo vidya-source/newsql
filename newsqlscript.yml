@@ -1,9 +1,9 @@
 ---
 - name: Check MySQL Server Health
-  hosts: 10.112.0.9
+  hosts: 10.112.0.10
   gather_facts: no
   vars:
-    mysql_host: "10.112.0.9"
+    mysql_host: "10.112.0.10"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_port: 3306
