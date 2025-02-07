@@ -1,6 +1,6 @@
 ---
 - name: Check MySQL Server Health
-  hosts: all
+  hosts: 20.55.88.203
   gather_facts: no
   vars:
     mysql_host: "{{mysql_host}}"
