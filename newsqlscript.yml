@@ -1,7 +1,7 @@
 ---
 - name: MySQL Database Health Check
-  hosts: localhost
-  become: yes
+  hosts: dbservers
+  remote_user: root
   vars:
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
