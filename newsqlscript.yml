@@ -18,33 +18,16 @@
 
     - name: Check database space utilization
       command: >
-        python3 -c "
-        import mysql.connector;
-
-        conn = mysql.connector.connect(
-            host='{{ mysql_host }}',
-            user='{{ mysql_username }}',
-            password='{{ mysql_password }}',
-            database='{{ mysql_database }}'
-        );
+        python3 -c "import mysql.connector;
+        conn = mysql.connector.connect(host='{{ mysql_host }}', user='{{ mysql_username }}', password='{{ mysql_password }}', database='{{ mysql_database }}');
         cursor = conn.cursor();
-
-        query = '''
-        SELECT table_schema AS DatabaseName,
-               SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
-        FROM information_schema.tables
-        GROUP BY table_schema;
-        ''';
+        query = '''SELECT table_schema AS DatabaseName, SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB FROM information_schema.tables GROUP BY table_schema;''';
         cursor.execute(query);
         results = cursor.fetchall();
-
         print('📊 Database Space Utilization:');
-        for row in results:
-            print(f' - {row[0]}: {row[1]} MB');
-
+        for row in results: print(f' - {row[0]}: {row[1]} MB');
         cursor.close();
-        conn.close();
-        "
+        conn.close();"
       register: db_space
 
     - name: Display database space utilization
@@ -53,30 +36,17 @@
 
     - name: Check for deadlocks in MySQL
       command: >
-        python3 -c "
-        import mysql.connector;
-
-        conn = mysql.connector.connect(
-            host='{{ mysql_host }}',
-            user='{{ mysql_username }}',
-            password='{{ mysql_password }}',
-            database='{{ mysql_database }}'
-        );
+        python3 -c "import mysql.connector;
+        conn = mysql.connector.connect(host='{{ mysql_host }}', user='{{ mysql_username }}', password='{{ mysql_password }}', database='{{ mysql_database }}');
         cursor = conn.cursor();
-
         query = 'SHOW ENGINE INNODB STATUS;';
         cursor.execute(query);
         result = cursor.fetchone();
-
         print('🚨 Deadlocks:');
-        if result and 'LATEST DETECTED DEADLOCK' in result[0]:
-            print(f' - Deadlock detected: {result[0]}');
-        else:
-            print(' - No deadlocks detected');
-
+        if result and 'LATEST DETECTED DEADLOCK' in result[0]: print(f' - Deadlock detected: {result[0]}');
+        else: print(' - No deadlocks detected');
         cursor.close();
-        conn.close();
-        "
+        conn.close();"
       register: deadlocks
 
     - name: Display deadlock information
@@ -85,35 +55,18 @@
 
     - name: Check MySQL event scheduler activities
       command: >
-        python3 -c "
-        import mysql.connector;
-
-        conn = mysql.connector.connect(
-            host='{{ mysql_host }}',
-            user='{{ mysql_username }}',
-            password='{{ mysql_password }}',
-            database='{{ mysql_database }}'
-        );
+        python3 -c "import mysql.connector;
+        conn = mysql.connector.connect(host='{{ mysql_host }}', user='{{ mysql_username }}', password='{{ mysql_password }}', database='{{ mysql_database }}');
         cursor = conn.cursor();
-
-        query = '''
-        SELECT event_name, status
-        FROM information_schema.events
-        WHERE status = 'ENABLED';
-        ''';
+        query = '''SELECT event_name, status FROM information_schema.events WHERE status = 'ENABLED';''';
         cursor.execute(query);
         results = cursor.fetchall();
-
         print('🛠 MySQL Event Activities:');
         if results:
-            for row in results:
-                print(f' - Event: {row[0]} | Status: {row[1]}');
-        else:
-            print(' - No active events found.');
-
+            for row in results: print(f' - Event: {row[0]} | Status: {row[1]}');
+        else: print(' - No active events found.');
         cursor.close();
-        conn.close();
-        "
+        conn.close();"
       register: job_activities
 
     - name: Display MySQL event activities
@@ -122,28 +75,16 @@
 
     - name: Check MySQL health status
       command: >
-        python3 -c "
-        import mysql.connector;
-
-        conn = mysql.connector.connect(
-            host='{{ mysql_host }}',
-            user='{{ mysql_username }}',
-            password='{{ mysql_password }}',
-            database='{{ mysql_database }}'
-        );
+        python3 -c "import mysql.connector;
+        conn = mysql.connector.connect(host='{{ mysql_host }}', user='{{ mysql_username }}', password='{{ mysql_password }}', database='{{ mysql_database }}');
         cursor = conn.cursor();
-
         query = 'SHOW STATUS LIKE \'Threads_connected\';';
         cursor.execute(query);
         result = cursor.fetchone();
-
         print('🩺 Database Health Check:');
-        if result:
-            print(f' - Active Connections: {result[1]}');
-
+        if result: print(f' - Active Connections: {result[1]}');
         cursor.close();
-        conn.close();
-        "
+        conn.close();"
       register: db_health
 
     - name: Display database health check
@@ -152,26 +93,16 @@
 
     - name: Check MySQL version
       command: >
-        python3 -c "
-        import mysql.connector;
-
-        conn = mysql.connector.connect(
-            host='{{ mysql_host }}',
-            user='{{ mysql_username }}',
-            password='{{ mysql_password }}'
-        );
+        python3 -c "import mysql.connector;
+        conn = mysql.connector.connect(host='{{ mysql_host }}', user='{{ mysql_username }}', password='{{ mysql_password }}');
         cursor = conn.cursor();
-
         query = 'SELECT VERSION();';
         cursor.execute(query);
         result = cursor.fetchone();
-
         print('[ℹ️] MySQL Version:');
         print(f' - {result[0]}');
-
         cursor.close();
-        conn.close();
-        "
+        conn.close();"
       register: mysql_version
 
     - name: Display MySQL version
