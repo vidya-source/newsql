@@ -1,7 +1,6 @@
 - name: Check MySQL Server Health
   hosts: localhost
-  gather_facts: yes
-  become: yes
+  gather_facts: no  # Disable fact gathering
   vars:
     mysql_host: "10.112.0.11"
     mysql_user: "mysqlauto"
@@ -9,16 +8,6 @@
     mysql_port: 3306
 
   tasks:
-    - name: Check if sudo is installed
-      command: which sudo
-      register: sudo_check
-      ignore_errors: yes
-
-    - name: Fail if sudo is not installed
-      fail:
-        msg: "sudo is not installed on the system. Please install sudo or run the playbook as root."
-      when: sudo_check.rc != 0
-
     - name: Install MySQL Client (Debian-based)
       package:
         name: mysql-client
