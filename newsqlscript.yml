@@ -10,28 +10,28 @@
 
   tasks:
     - name: Install MySQL Client (Debian-based)
-      become: yes  # Use root privileges for package installation
+      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: mysql-client
         state: present
       when: ansible_os_family == 'Debian'
 
     - name: Install MySQL Client (RHEL-based)
-      become: yes  # Use root privileges for package installation
+      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: mysql
         state: present
       when: ansible_os_family == 'RedHat'
 
     - name: Install jq (Debian-based)
-      become: yes  # Use root privileges for package installation
+      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: jq
         state: present
       when: ansible_os_family == 'Debian'
 
     - name: Install jq (RHEL-based)
-      become: yes  # Use root privileges for package installation
+      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: jq
         state: present
