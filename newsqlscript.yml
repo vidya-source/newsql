@@ -1,7 +1,7 @@
 ---
 - name: Check MySQL Server Health
   hosts: localhost
-  gather_facts: yes  # Enable fact gathering to get OS family and other system details
+  gather_facts: yes
   vars:
     mysql_host: "10.112.0.11"
     mysql_user: "mysqlauto"
@@ -10,32 +10,32 @@
 
   tasks:
     - name: Install MySQL Client (Debian-based)
-      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: mysql-client
         state: present
       when: ansible_os_family == 'Debian'
+      delegate_to: localhost
 
     - name: Install MySQL Client (RHEL-based)
-      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: mysql
         state: present
       when: ansible_os_family == 'RedHat'
+      delegate_to: localhost
 
     - name: Install jq (Debian-based)
-      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: jq
         state: present
       when: ansible_os_family == 'Debian'
+      delegate_to: localhost
 
     - name: Install jq (RHEL-based)
-      become: yes  # Use root privileges for package installation without relying on sudo
       package:
         name: jq
         state: present
       when: ansible_os_family == 'RedHat'
+      delegate_to: localhost
 
     - name: Get Database Space Utilization
       shell: |
@@ -45,6 +45,7 @@
                GROUP BY table_schema;"
         mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -e "$query" --skip-column-names --batch --silent | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({"DatabaseName": .[0], "SizeMB": .[1]})'
       register: db_space
+      delegate_to: localhost
       ignore_errors: yes
 
     - name: Get Database Health
@@ -57,6 +58,7 @@
                GROUP BY schema_name;"
         mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -e "$query" --skip-column-names --batch --silent | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({"DatabaseName": .[0], "Status": .[1], "ActiveConnections": .[2]})'
       register: db_health
+      delegate_to: localhost
       ignore_errors: yes
 
     - name: Check for Deadlocks
@@ -64,6 +66,7 @@
         query="SHOW ENGINE INNODB STATUS;"
         mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -e "$query" --skip-column-names --batch --silent | grep -i 'deadlock'
       register: deadlocks
+      delegate_to: localhost
       ignore_errors: yes
 
     - name: Get MySQL Job Activities
@@ -71,6 +74,7 @@
         query="SHOW EVENTS;"
         mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -P {{ mysql_port }} -e "$query" --skip-column-names --batch --silent | jq -R -s -c 'split("\n") | map(select(length > 0))'
       register: job_activities
+      delegate_to: localhost
       ignore_errors: yes
 
     - name: Convert Outputs to JSON
