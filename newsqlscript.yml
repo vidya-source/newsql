@@ -10,64 +10,48 @@
     mysql_port: "3306"
 
   tasks:
-    - name: Connect to MySQL and check database space utilization
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: |
+    - name: Check database space utilization
+      shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
           SELECT table_schema AS DatabaseName,
                  SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
           FROM information_schema.tables
-          GROUP BY table_schema;
+          GROUP BY table_schema;"
       register: db_space
 
     - name: Display database space utilization
       debug:
-        msg: "📊 Database Space Utilization: {{ db_space.results }}"
+        msg: "📊 Database Space Utilization: {{ db_space.stdout }}"
 
     - name: Check for deadlocks in MySQL
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: "SHOW ENGINE INNODB STATUS;"
+      shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "SHOW ENGINE INNODB STATUS;"
       register: deadlocks
 
     - name: Display deadlock information
       debug:
-        msg: "🚨 Deadlocks: {{ deadlocks.results }}"
+        msg: "🚨 Deadlocks: {{ deadlocks.stdout }}"
 
     - name: Check MySQL event scheduler activities
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: |
+      shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
           SELECT event_name, status
           FROM information_schema.events
-          WHERE status = 'ENABLED';
+          WHERE status = 'ENABLED';"
       register: job_activities
 
     - name: Display MySQL event activities
       debug:
-        msg: "🛠 MySQL Event Activities: {{ job_activities.results }}"
+        msg: "🛠 MySQL Event Activities: {{ job_activities.stdout }}"
 
     - name: Check MySQL health status
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: "SHOW STATUS LIKE 'Threads_connected';"
+      shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "SHOW STATUS LIKE 'Threads_connected';"
       register: db_health
 
     - name: Display database health check
       debug:
-        msg: "🩺 Database Health Check: {{ db_health.results }}"
+        msg: "🩺 Database Health Check: {{ db_health.stdout }}"
 
     - name: Execute remote command to check MySQL version via SSH
       shell: |
