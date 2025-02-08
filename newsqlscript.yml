@@ -1,69 +1,81 @@
 ---
-- name: MySQL Server Health Check
-  hosts: localhost
-  become: yes
+- name: Check MySQL Server Health
+  hosts: 10.112.0.11
+  gather_facts: no
   vars:
-    mysql_host: "10.112.0.11"   # Adjust as needed
-    mysql_user: "mysqlauto"        # Use a MySQL user with appropriate permissions
-    mysql_password: "mysqlAutomation"  # Optional if you want to provide the password
-    ansible_ssh_private_key_file: r"C:\Users\ramakistu.vidya\Downloads\id_rsa 1"  # Path to your private key
+    mysql_host: "10.112.0.11"
+    mysql_user: "mysqluser"
+    mysql_password: "mysqlAutomation"
+    mysql_db: "information_schema"  # Default database for system information
 
   tasks:
-    - name: Check MySQL database disk space
-      command: "df -h /var/lib/mysql"  # Path to the MySQL data directory
+    - name: Get Database Space Utilization
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
+        SELECT table_schema AS DatabaseName, 
+        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB 
+        FROM information_schema.TABLES 
+        GROUP BY table_schema;
+        "
       register: db_space
-    - name: Display database space utilization
+      ignore_errors: yes
+
+    - name: Get Database Health
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
+        SELECT SCHEMA_NAME AS DatabaseName, 
+        'N/A' AS Status, 
+        (SELECT COUNT(*) FROM information_schema.PROCESSLIST) AS ActiveRequests, 
+        (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE USER IS NOT NULL) AS ActiveUserConnections, 
+        (SELECT COUNT(*) FROM information_schema.INNODB_TRX) AS PendingRequests, 
+        (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Threads_running') AS CPUQueueLength 
+        FROM information_schema.SCHEMATA;
+        "
+      register: db_health
+      ignore_errors: yes
+
+    - name: Check for Deadlocks
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
+        SELECT COUNT(*) AS Deadlocks 
+        FROM information_schema.INNODB_LOCKS 
+        WHERE lock_trx_id IN (SELECT blocking_trx_id FROM information_schema.INNODB_LOCK_WAITS);
+        "
+      register: deadlocks
+      ignore_errors: yes
+
+    - name: Get MySQL Scheduled Events
+      shell: |
+        mysql -h {{ mysql_host }} -u {{ mysql_user }} -p{{ mysql_password }} -e "
+        SELECT EVENT_NAME AS EventName, 
+        EVENT_SCHEMA AS DatabaseName, 
+        STATUS AS Status, 
+        LAST_EXECUTED AS LastExecuted 
+        FROM information_schema.EVENTS;
+        "
+      register: scheduled_events
+      ignore_errors: yes
+
+    - name: Display Database Space Utilization
       debug:
-        var: db_space.stdout_lines
+        msg: |
+          📊 Database Space Utilization:
+          {{ db_space.stdout }}
 
-    - name: Check MySQL database utilization
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        state: query
-        query: "SELECT table_schema AS 'Database', ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size(MB)' FROM information_schema.tables GROUP BY table_schema;"
-      register: db_utilization
-
-    - name: Display database utilization
+    - name: Display Database Health
       debug:
-        var: db_utilization.query_result
+        msg: |
+          🩺 Database Health Check:
+          {{ db_health.stdout }}
 
-    - name: Check MySQL health status
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        state: query
-        query: "SHOW STATUS;"
-      register: db_health_status
-
-    - name: Display MySQL health status
+    - name: Display Deadlocks
       debug:
-        var: db_health_status.query_result
+        msg: |
+          🚨 Deadlocks:
+          {{ deadlocks.stdout }}
 
-    - name: Check for deadlocks in InnoDB
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        state: query
-        query: "SHOW ENGINE INNODB STATUS;"
-      register: innodb_status
-
-    - name: Display InnoDB status
+    - name: Display Scheduled Events
       debug:
-        var: innodb_status.query_result
-
-    - name: Check for active MySQL jobs/threads
-      mysql_db:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        state: query
-        query: "SHOW PROCESSLIST;"
-      register: process_list
-
-    - name: Display MySQL process list
-      debug:
-        var: process_list.query_result
+        msg: |
+          🛠 MySQL Scheduled Events:
+          {{ scheduled_events.stdout }}
