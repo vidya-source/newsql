@@ -1,18 +1,23 @@
 ---
 - name: MySQL Health Check Playbook
-  hosts: localhost
+  hosts: mysql_servers
   become: yes
   vars:
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
-    
+  
+  pre_tasks:
+    - name: Install required collections
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.mysql
+
   tasks:
     - name: Check MySQL Service Status
       service_facts:
       register: mysql_status
 
     - name: Get Database Sizes
-      mysql_query:
+      community.mysql.mysql_query:
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         query: |
@@ -24,7 +29,7 @@
       register: db_sizes
 
     - name: Check for Deadlocks
-      mysql_query:
+      community.mysql.mysql_query:
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         query: |
@@ -32,7 +37,7 @@
       register: deadlock_status
 
     - name: Get Running Processes
-      mysql_query:
+      community.mysql.mysql_query:
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         query: |
@@ -50,7 +55,7 @@
       register: process_list
 
     - name: Check Event Scheduler Status
-      mysql_query:
+      community.mysql.mysql_query:
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
         query: |
