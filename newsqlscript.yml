@@ -1,6 +1,6 @@
 ---
 - name: MySQL Health Check and Monitoring
-  hosts: mysql_servers
+  hosts: localhost
   become: true
   vars:
     mysql_host: "20.55.88.203"
