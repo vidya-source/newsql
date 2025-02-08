@@ -1,170 +1,114 @@
 ---
-- name: MySQL Health Check Playbook
+- name: Check MySQL Server Health
   hosts: localhost
   gather_facts: no
-  become: no
   vars:
     mysql_host: "10.112.0.11"
-    mysql_port: "3306"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
-  
+    mysql_port: 3306
+
   tasks:
-    - name: Find MySQL client
-      shell: "which mysql || echo ''"
-      register: mysql_path
-      ignore_errors: yes
-
-    - name: Set MySQL command
-      set_fact:
-        mysql_cmd: "{{ mysql_path.stdout if mysql_path.stdout != '' else 'mysql' }} -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -B"
-
-    - name: Create timestamp
-      set_fact:
-        timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
-
-    - name: Test MySQL Connection
-      shell: "{{ mysql_cmd }} -e 'SELECT VERSION();'"
-      register: mysql_version
-      ignore_errors: yes
-
-    - name: Initialize empty variables
-      set_fact:
-        db_sizes: {"stdout": "", "stderr": "Query not executed", "rc": -1}
-        process_list: {"stdout": "", "stderr": "Query not executed", "rc": -1}
-        server_status: {"stdout": "", "stderr": "Query not executed", "rc": -1}
-        table_status: {"stdout": "", "stderr": "Query not executed", "rc": -1}
-
-    - name: Get Database Sizes
+    - name: Get Database Space Utilization
       shell: |
-        {{ mysql_cmd }} -e "
-        SELECT CONCAT(table_schema, ',', 
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2)) 
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT 
+          table_schema AS DatabaseName,
+          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
         FROM information_schema.tables 
         GROUP BY table_schema;"
-      register: db_sizes
-      when: mysql_version.rc is defined and mysql_version.rc == 0
+      register: db_space
       ignore_errors: yes
 
-    - name: Get Running Processes
+    - name: Get Database Health
       shell: |
-        {{ mysql_cmd }} -e "
-        SELECT CONCAT(id, ',', user, ',', db, ',', time, ',', state) 
-        FROM information_schema.processlist
-        WHERE command != 'Sleep';"
-      register: process_list
-      when: mysql_version.rc is defined and mysql_version.rc == 0
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT 
+          schema_name AS DatabaseName,
+          'ONLINE' AS Status,
+          (SELECT COUNT(*) FROM information_schema.processlist WHERE command != 'Sleep') AS ActiveRequests,
+          (SELECT COUNT(*) FROM information_schema.processlist) AS ActiveUserConnections,
+          (SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'Waiting for table metadata lock') AS PendingRequests,
+          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS CPUQueueLength
+        FROM information_schema.schemata;"
+      register: db_health
       ignore_errors: yes
 
-    - name: Get Server Status
+    - name: Check for Deadlocks
       shell: |
-        {{ mysql_cmd }} -e "
-        SHOW GLOBAL STATUS WHERE Variable_name IN 
-        ('Threads_connected', 'Threads_running', 'Questions', 'Uptime');"
-      register: server_status
-      when: mysql_version.rc is defined and mysql_version.rc == 0
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT COUNT(*) AS Deadlocks 
+        FROM information_schema.innodb_trx t1 
+        INNER JOIN information_schema.innodb_trx t2 
+        WHERE t1.trx_id != t2.trx_id 
+        AND t1.trx_waiting_lock_id = t2.trx_lock_id 
+        AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
+      register: deadlocks
       ignore_errors: yes
 
-    - name: Get Table Status
+    - name: Get MySQL Events Status
       shell: |
-        {{ mysql_cmd }} -e "
-        SELECT CONCAT(table_schema, ',', table_name, ',', 
-          engine, ',', IFNULL(table_rows, 'N/A'), ',',
-          ROUND(data_length/1024/1024, 2))
-        FROM information_schema.tables 
-        WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'mysql')
-        ORDER BY data_length DESC LIMIT 10;"
-      register: table_status
-      when: mysql_version.rc is defined and mysql_version.rc == 0
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT 
+          event_name,
+          status,
+          last_executed,
+          CASE 
+            WHEN execute_at IS NOT NULL THEN 'SCHEDULED'
+            WHEN on_completion = 'PRESERVE' THEN 'RECURRING'
+            ELSE 'ONE-TIME'
+          END as event_type
+        FROM information_schema.events;"
+      register: event_activities
       ignore_errors: yes
 
-    - name: Create Report Directory
-      file:
-        path: "./mysql_reports"
-        state: directory
-        mode: '0755'
+    - name: Process MySQL Output
+      set_fact:
+        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
+                          map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
+        db_health_fact: "{{ db_health.stdout_lines | map('split', '\t') | 
+                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveRequests', 
+                          'ActiveUserConnections', 'PendingRequests', 'CPUQueueLength']) | list }}"
+        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | trim | int } }}"
+        event_activities_fact: "{{ event_activities.stdout_lines | map('split', '\t') | 
+                                 map('list') | map('dict', ['event_name', 'status', 
+                                 'last_executed', 'event_type']) | list }}"
 
-    - name: Generate Health Report
-      copy:
-        content: |
-          MySQL Health Report - {{ timestamp }}
-          ================================================
-
-          Connection Information
-          ---------------------
-          Host: {{ mysql_host }}
-          Port: {{ mysql_port }}
-          MySQL Client: {{ mysql_path.stdout if mysql_path.stdout != '' else 'Not found in PATH' }}
-          Connection Test: {{ 'Success' if mysql_version.rc is defined and mysql_version.rc == 0 else 'Failed - ' + mysql_version.stderr | default('Unknown error') }}
-
-          {% if mysql_version.rc is defined and mysql_version.rc == 0 %}
-          Database Space Utilization
-          -------------------------
-          {% if db_sizes.stdout_lines | default([]) | length > 0 %}
-          {% for line in db_sizes.stdout_lines %}
-          {% set parts = line.split(',') %}
-          Database: {{ parts[0] }}
-          Size (MB): {{ parts[1] }}
-          {% endfor %}
-          {% else %}
-          No database size information available
-          {% endif %}
-
-          Top 10 Largest Tables
-          --------------------
-          {% if table_status.stdout_lines | default([]) | length > 0 %}
-          {% for line in table_status.stdout_lines %}
-          {% set parts = line.split(',') %}
-          Schema: {{ parts[0] }}
-          Table: {{ parts[1] }}
-          Engine: {{ parts[2] }}
-          Rows: {{ parts[3] }}
-          Size (MB): {{ parts[4] }}
-          {% endfor %}
-          {% else %}
-          No table status information available
-          {% endif %}
-
-          Running Processes
-          ----------------
-          {% if process_list.stdout_lines | default([]) | length > 0 %}
-          {% for line in process_list.stdout_lines %}
-          {% set parts = line.split(',') %}
-          ID: {{ parts[0] }}
-          User: {{ parts[1] }}
-          Database: {{ parts[2] }}
-          Time: {{ parts[3] }}
-          State: {{ parts[4] }}
-          {% endfor %}
-          {% else %}
-          No active processes
-          {% endif %}
-
-          Server Status
-          -------------
-          {% if server_status.stdout_lines | default([]) | length > 0 %}
-          {{ server_status.stdout }}
-          {% else %}
-          No server status information available
-          {% endif %}
-
-          {% else %}
-          ERROR: Could not connect to MySQL server
-          Possible reasons:
-          1. MySQL client is not installed
-          2. MySQL server is not accessible
-          3. Invalid credentials
-          4. Network connectivity issues
-
-          Please ensure:
-          1. MySQL client is installed
-          2. The server is running and accessible
-          3. The credentials are correct
-          4. Network connectivity is available
-          {% endif %}
-        dest: "./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
-        mode: '0644'
-
-    - name: Display Report Location
+    - name: Display Formatted Results
       debug:
-        msg: "MySQL health report has been generated at ./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
+        msg: |
+          📊 Database Space Utilization:
+          {% for item in db_space_fact %}
+           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% endfor %}
+    
+          🚨 Deadlocks:
+          {% if deadlocks_fact.Deadlocks > 0 %}
+           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% else %}
+           - No deadlocks detected
+          {% endif %}
+    
+          [ℹ️] Events query returned {{ event_activities_fact | length }} rows.
+          
+          🛠 MySQL Events Status:
+          {% for event in event_activities_fact %}
+           - Event: {{ event.event_name }}
+             Status: {{ event.status }}
+             Last Executed: {{ event.last_executed }}
+             Type: {{ event.event_type }}
+          {% endfor %}
+    
+          🩺 Database Health Check:
+          {% if db_health_fact | length > 0 %}
+            {% for item in db_health_fact %}
+               - Database: {{ item.DatabaseName }}
+                 - Status: {{ item.Status }}
+                 - Active Requests: {{ item.ActiveRequests }}
+                 - Active User Connections: {{ item.ActiveUserConnections }}
+                 - Pending Requests: {{ item.PendingRequests }}
+                 - Running Threads: {{ item.CPUQueueLength }}
+            {% endfor %}
+          {% else %}
+            [❌] No database health data available.
+          {% endif %}
