@@ -1,7 +1,7 @@
 ---
 - name: MySQL Health Check and Monitoring
   hosts: mysql_servers
-  become: yes
+  become: true
   vars:
     mysql_host: "20.55.88.203"
     mysql_database: "information_schema"
@@ -16,7 +16,7 @@
         state: present
 
     - name: Check database space utilization
-      ansible.builtin.mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -33,7 +33,7 @@
         msg: "📊 Database Space Utilization: {{ db_space.results }}"
 
     - name: Check for deadlocks
-      ansible.builtin.mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -46,7 +46,7 @@
         msg: "🚨 Deadlocks: {{ deadlocks.results }}"
 
     - name: Check MySQL event scheduler activities
-      ansible.builtin.mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
@@ -62,7 +62,7 @@
         msg: "🛠 MySQL Event Activities: {{ job_activities.results }}"
 
     - name: Check MySQL health status
-      ansible.builtin.mysql_query:
+      community.mysql.mysql_query:
         login_host: "{{ mysql_host }}"
         login_user: "{{ mysql_username }}"
         login_password: "{{ mysql_password }}"
