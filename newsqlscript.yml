@@ -1,92 +1,52 @@
 ---
 - name: MySQL Health Check Playbook
   hosts: localhost
-  become: yes  # Needed for package installation
-  gather_facts: yes  # Needed to detect OS
+  gather_facts: no
+  become: no
   vars:
+    mysql_host: "10.112.0.10"
+    mysql_port: "3306"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
-    mysql_cmd: "mysql -u{{ mysql_user }} -p{{ mysql_password }} -N -B"
+    mysql_cmd: "/usr/bin/mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -B"
   
   tasks:
-    - name: Install MySQL client (Debian/Ubuntu)
-      apt:
-        name: mysql-client
-        state: present
-        update_cache: yes
-      when: ansible_os_family == "Debian"
-      ignore_errors: yes
-
-    - name: Install MySQL client (RedHat/CentOS)
-      yum:
-        name: mysql
-        state: present
-      when: ansible_os_family == "RedHat"
-      ignore_errors: yes
-
     - name: Create timestamp
       set_fact:
         timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
 
-    - name: Test MySQL Connection
-      shell: "{{ mysql_cmd }} -e 'SELECT VERSION();'"
-      register: mysql_test
-      ignore_errors: yes
-
-    - name: Fail if MySQL connection fails
-      fail:
-        msg: "Cannot connect to MySQL server. Please check credentials and server status."
-      when: mysql_test.rc != 0 and not mysql_test.stderr is search("command not found")
-
     - name: Get Database Sizes
       shell: |
         {{ mysql_cmd }} -e "
-        SELECT 
-          table_schema AS 'Database',
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size_MB'
-        FROM information_schema.tables
+        SELECT CONCAT(table_schema, ',', 
+          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2)) 
+        FROM information_schema.tables 
         GROUP BY table_schema;"
       register: db_sizes
-      when: mysql_test.rc == 0
-      ignore_errors: yes
-
-    - name: Check for Deadlocks
-      shell: |
-        {{ mysql_cmd }} -e "SHOW ENGINE INNODB STATUS\G"
-      register: deadlock_status
-      when: mysql_test.rc == 0
       ignore_errors: yes
 
     - name: Get Running Processes
       shell: |
         {{ mysql_cmd }} -e "
-        SELECT 
-          id,
-          user,
-          host,
-          db,
-          command,
-          time,
-          state,
-          info
+        SELECT CONCAT(id, ',', user, ',', db, ',', command, ',', time, ',', state) 
         FROM information_schema.processlist
         WHERE command != 'Sleep';"
       register: process_list
-      when: mysql_test.rc == 0
       ignore_errors: yes
 
-    - name: Check Event Scheduler Status
+    - name: Get Lock Status
       shell: |
         {{ mysql_cmd }} -e "
-        SELECT 
-          event_name,
-          status,
-          last_executed,
-          starts,
-          ends
-        FROM information_schema.events;"
-      register: event_status
-      when: mysql_test.rc == 0
+        SELECT CONCAT(waiting_pid, ',', waiting_query, ',', blocking_pid, ',', blocking_query)
+        FROM sys.innodb_lock_waits;"
+      register: lock_status
+      ignore_errors: yes
+
+    - name: Get Server Status
+      shell: |
+        {{ mysql_cmd }} -e "SHOW GLOBAL STATUS WHERE 
+        Variable_name IN ('Threads_connected', 'Threads_running', 'Questions', 'Queries', 'Uptime');"
+      register: server_status
       ignore_errors: yes
 
     - name: Create Report Directory
@@ -101,25 +61,64 @@
           MySQL Health Report - {{ timestamp }}
           ================================================
 
-          Connection Status
-          ----------------
-          {{ mysql_test.stdout if mysql_test.rc == 0 else 'Failed to connect to MySQL server' }}
+          Connection Information
+          ---------------------
+          Host: {{ mysql_host }}
+          Port: {{ mysql_port }}
+          User: {{ mysql_user }}
 
           Database Space Utilization
           -------------------------
-          {{ db_sizes.stdout if (db_sizes.stdout is defined and db_sizes.rc == 0) else 'Query failed or skipped' }}
-
-          Deadlock Information
-          -------------------
-          {{ deadlock_status.stdout if (deadlock_status.stdout is defined and deadlock_status.rc == 0) else 'Query failed or skipped' }}
+          {% if db_sizes.rc == 0 %}
+          {% for line in db_sizes.stdout_lines %}
+          Database: {{ line.split(',')[0] }}
+          Size (MB): {{ line.split(',')[1] }}
+          {% endfor %}
+          {% else %}
+          Failed to get database sizes
+          Error: {{ db_sizes.stderr if db_sizes.stderr is defined else 'Unknown error' }}
+          {% endif %}
 
           Running Processes
           ----------------
-          {{ process_list.stdout if (process_list.stdout is defined and process_list.rc == 0) else 'Query failed or skipped' }}
+          {% if process_list.rc == 0 %}
+          {% for line in process_list.stdout_lines %}
+          {% set parts = line.split(',') %}
+          ID: {{ parts[0] }}
+          User: {{ parts[1] }}
+          Database: {{ parts[2] }}
+          Command: {{ parts[3] }}
+          Time: {{ parts[4] }}
+          State: {{ parts[5] }}
+          {% endfor %}
+          {% else %}
+          Failed to get process list
+          Error: {{ process_list.stderr if process_list.stderr is defined else 'Unknown error' }}
+          {% endif %}
 
-          Event Scheduler Status
-          ---------------------
-          {{ event_status.stdout if (event_status.stdout is defined and event_status.rc == 0) else 'Query failed or skipped' }}
+          Lock Information
+          ---------------
+          {% if lock_status.rc == 0 %}
+          {% for line in lock_status.stdout_lines %}
+          {% set parts = line.split(',') %}
+          Waiting Process: {{ parts[0] }}
+          Waiting Query: {{ parts[1] }}
+          Blocking Process: {{ parts[2] }}
+          Blocking Query: {{ parts[3] }}
+          {% endfor %}
+          {% else %}
+          Failed to get lock status
+          Error: {{ lock_status.stderr if lock_status.stderr is defined else 'Unknown error' }}
+          {% endif %}
+
+          Server Status
+          -------------
+          {% if server_status.rc == 0 %}
+          {{ server_status.stdout }}
+          {% else %}
+          Failed to get server status
+          Error: {{ server_status.stderr if server_status.stderr is defined else 'Unknown error' }}
+          {% endif %}
         dest: "./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
         mode: '0644'
 
