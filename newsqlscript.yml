@@ -1,16 +1,17 @@
 ---
 - name: MySQL Health Check Playbook
   hosts: localhost
-  become: yes
+  become: no
+  gather_facts: no
   vars:
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_cmd: "mysql -u{{ mysql_user }} -p{{ mysql_password }} -N -B"
   
   tasks:
-    - name: Check MySQL Service Status
-      service_facts:
-      register: mysql_status
+    - name: Create timestamp
+      ansible.builtin.set_fact:
+        timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
 
     - name: Get Database Sizes
       ansible.builtin.shell: |
@@ -21,11 +22,13 @@
         FROM information_schema.tables
         GROUP BY table_schema;"
       register: db_sizes
+      ignore_errors: yes
 
     - name: Check for Deadlocks
       ansible.builtin.shell: |
         {{ mysql_cmd }} -e "SHOW ENGINE INNODB STATUS\G"
       register: deadlock_status
+      ignore_errors: yes
 
     - name: Get Running Processes
       ansible.builtin.shell: |
@@ -42,6 +45,7 @@
         FROM information_schema.processlist
         WHERE command != 'Sleep';"
       register: process_list
+      ignore_errors: yes
 
     - name: Check Event Scheduler Status
       ansible.builtin.shell: |
@@ -54,41 +58,38 @@
           ends
         FROM information_schema.events;"
       register: event_status
+      ignore_errors: yes
 
     - name: Create Report Directory
       ansible.builtin.file:
-        path: /tmp/mysql_reports
+        path: "./mysql_reports"
         state: directory
         mode: '0755'
 
     - name: Generate Health Report
       ansible.builtin.copy:
         content: |
-          MySQL Health Report - {{ ansible_date_time.date }}
+          MySQL Health Report - {{ timestamp }}
           ================================================
-
-          Service Status
-          -------------
-          MySQL Service Status: {{ mysql_status.ansible_facts.services['mysql.service'].state }}
 
           Database Space Utilization
           -------------------------
-          {{ db_sizes.stdout }}
+          {{ db_sizes.stdout if db_sizes.stdout is defined else 'Query failed' }}
 
           Deadlock Information
           -------------------
-          {{ deadlock_status.stdout }}
+          {{ deadlock_status.stdout if deadlock_status.stdout is defined else 'Query failed' }}
 
           Running Processes
           ----------------
-          {{ process_list.stdout }}
+          {{ process_list.stdout if process_list.stdout is defined else 'Query failed' }}
 
           Event Scheduler Status
           ---------------------
-          {{ event_status.stdout }}
-        dest: "/tmp/mysql_reports/mysql_health_report_{{ ansible_date_time.date }}.txt"
+          {{ event_status.stdout if event_status.stdout is defined else 'Query failed' }}
+        dest: "./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
         mode: '0644'
 
     - name: Display Report Location
       debug:
-        msg: "MySQL health report has been generated at /tmp/mysql_reports/mysql_health_report_{{ ansible_date_time.date }}.txt"
+        msg: "MySQL health report has been generated at ./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
