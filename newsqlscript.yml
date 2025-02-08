@@ -8,11 +8,6 @@
     mysql_port: "3306"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
-    possible_mysql_paths:
-      - /usr/bin/mysql
-      - /usr/local/bin/mysql
-      - /usr/local/mysql/bin/mysql
-      - mysql
   
   tasks:
     - name: Find MySQL client
@@ -33,6 +28,13 @@
       register: mysql_version
       ignore_errors: yes
 
+    - name: Initialize empty variables
+      set_fact:
+        db_sizes: {"stdout": "", "stderr": "Query not executed", "rc": -1}
+        process_list: {"stdout": "", "stderr": "Query not executed", "rc": -1}
+        server_status: {"stdout": "", "stderr": "Query not executed", "rc": -1}
+        table_status: {"stdout": "", "stderr": "Query not executed", "rc": -1}
+
     - name: Get Database Sizes
       shell: |
         {{ mysql_cmd }} -e "
@@ -41,7 +43,7 @@
         FROM information_schema.tables 
         GROUP BY table_schema;"
       register: db_sizes
-      when: mysql_version.rc == 0
+      when: mysql_version.rc is defined and mysql_version.rc == 0
       ignore_errors: yes
 
     - name: Get Running Processes
@@ -51,7 +53,7 @@
         FROM information_schema.processlist
         WHERE command != 'Sleep';"
       register: process_list
-      when: mysql_version.rc == 0
+      when: mysql_version.rc is defined and mysql_version.rc == 0
       ignore_errors: yes
 
     - name: Get Server Status
@@ -60,7 +62,7 @@
         SHOW GLOBAL STATUS WHERE Variable_name IN 
         ('Threads_connected', 'Threads_running', 'Questions', 'Uptime');"
       register: server_status
-      when: mysql_version.rc == 0
+      when: mysql_version.rc is defined and mysql_version.rc == 0
       ignore_errors: yes
 
     - name: Get Table Status
@@ -73,7 +75,7 @@
         WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'mysql')
         ORDER BY data_length DESC LIMIT 10;"
       register: table_status
-      when: mysql_version.rc == 0
+      when: mysql_version.rc is defined and mysql_version.rc == 0
       ignore_errors: yes
 
     - name: Create Report Directory
@@ -92,25 +94,25 @@
           ---------------------
           Host: {{ mysql_host }}
           Port: {{ mysql_port }}
-          MySQL Version: {{ mysql_version.stdout if mysql_version.rc == 0 else 'Connection Failed' }}
-          MySQL Client Path: {{ mysql_path.stdout if mysql_path.stdout != '' else 'Using default PATH' }}
+          MySQL Client: {{ mysql_path.stdout if mysql_path.stdout != '' else 'Not found in PATH' }}
+          Connection Test: {{ 'Success' if mysql_version.rc is defined and mysql_version.rc == 0 else 'Failed - ' + mysql_version.stderr | default('Unknown error') }}
 
+          {% if mysql_version.rc is defined and mysql_version.rc == 0 %}
           Database Space Utilization
           -------------------------
-          {% if db_sizes.rc == 0 and db_sizes.stdout_lines | length > 0 %}
+          {% if db_sizes.stdout_lines | default([]) | length > 0 %}
           {% for line in db_sizes.stdout_lines %}
           {% set parts = line.split(',') %}
           Database: {{ parts[0] }}
           Size (MB): {{ parts[1] }}
           {% endfor %}
           {% else %}
-          Failed to get database sizes
-          Error: {{ db_sizes.stderr if db_sizes.stderr is defined else 'Unknown error' }}
+          No database size information available
           {% endif %}
 
           Top 10 Largest Tables
           --------------------
-          {% if table_status.rc == 0 and table_status.stdout_lines | length > 0 %}
+          {% if table_status.stdout_lines | default([]) | length > 0 %}
           {% for line in table_status.stdout_lines %}
           {% set parts = line.split(',') %}
           Schema: {{ parts[0] }}
@@ -120,13 +122,12 @@
           Size (MB): {{ parts[4] }}
           {% endfor %}
           {% else %}
-          Failed to get table status
-          Error: {{ table_status.stderr if table_status.stderr is defined else 'Unknown error' }}
+          No table status information available
           {% endif %}
 
           Running Processes
           ----------------
-          {% if process_list.rc == 0 and process_list.stdout_lines | length > 0 %}
+          {% if process_list.stdout_lines | default([]) | length > 0 %}
           {% for line in process_list.stdout_lines %}
           {% set parts = line.split(',') %}
           ID: {{ parts[0] }}
@@ -136,17 +137,30 @@
           State: {{ parts[4] }}
           {% endfor %}
           {% else %}
-          No active processes or failed to get process list
-          Error: {{ process_list.stderr if process_list.stderr is defined else 'Unknown error' }}
+          No active processes
           {% endif %}
 
           Server Status
           -------------
-          {% if server_status.rc == 0 and server_status.stdout_lines | length > 0 %}
+          {% if server_status.stdout_lines | default([]) | length > 0 %}
           {{ server_status.stdout }}
           {% else %}
-          Failed to get server status
-          Error: {{ server_status.stderr if server_status.stderr is defined else 'Unknown error' }}
+          No server status information available
+          {% endif %}
+
+          {% else %}
+          ERROR: Could not connect to MySQL server
+          Possible reasons:
+          1. MySQL client is not installed
+          2. MySQL server is not accessible
+          3. Invalid credentials
+          4. Network connectivity issues
+
+          Please ensure:
+          1. MySQL client is installed
+          2. The server is running and accessible
+          3. The credentials are correct
+          4. Network connectivity is available
           {% endif %}
         dest: "./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
         mode: '0644'
