@@ -1,20 +1,45 @@
 ---
 - name: MySQL Health Check Playbook
   hosts: localhost
-  become: no
-  gather_facts: no
+  become: yes  # Needed for package installation
+  gather_facts: yes  # Needed to detect OS
   vars:
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_cmd: "mysql -u{{ mysql_user }} -p{{ mysql_password }} -N -B"
   
   tasks:
+    - name: Install MySQL client (Debian/Ubuntu)
+      apt:
+        name: mysql-client
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: Install MySQL client (RedHat/CentOS)
+      yum:
+        name: mysql
+        state: present
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
     - name: Create timestamp
-      ansible.builtin.set_fact:
+      set_fact:
         timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
 
+    - name: Test MySQL Connection
+      shell: "{{ mysql_cmd }} -e 'SELECT VERSION();'"
+      register: mysql_test
+      ignore_errors: yes
+
+    - name: Fail if MySQL connection fails
+      fail:
+        msg: "Cannot connect to MySQL server. Please check credentials and server status."
+      when: mysql_test.rc != 0 and not mysql_test.stderr is search("command not found")
+
     - name: Get Database Sizes
-      ansible.builtin.shell: |
+      shell: |
         {{ mysql_cmd }} -e "
         SELECT 
           table_schema AS 'Database',
@@ -22,16 +47,18 @@
         FROM information_schema.tables
         GROUP BY table_schema;"
       register: db_sizes
+      when: mysql_test.rc == 0
       ignore_errors: yes
 
     - name: Check for Deadlocks
-      ansible.builtin.shell: |
+      shell: |
         {{ mysql_cmd }} -e "SHOW ENGINE INNODB STATUS\G"
       register: deadlock_status
+      when: mysql_test.rc == 0
       ignore_errors: yes
 
     - name: Get Running Processes
-      ansible.builtin.shell: |
+      shell: |
         {{ mysql_cmd }} -e "
         SELECT 
           id,
@@ -45,10 +72,11 @@
         FROM information_schema.processlist
         WHERE command != 'Sleep';"
       register: process_list
+      when: mysql_test.rc == 0
       ignore_errors: yes
 
     - name: Check Event Scheduler Status
-      ansible.builtin.shell: |
+      shell: |
         {{ mysql_cmd }} -e "
         SELECT 
           event_name,
@@ -58,35 +86,40 @@
           ends
         FROM information_schema.events;"
       register: event_status
+      when: mysql_test.rc == 0
       ignore_errors: yes
 
     - name: Create Report Directory
-      ansible.builtin.file:
+      file:
         path: "./mysql_reports"
         state: directory
         mode: '0755'
 
     - name: Generate Health Report
-      ansible.builtin.copy:
+      copy:
         content: |
           MySQL Health Report - {{ timestamp }}
           ================================================
 
+          Connection Status
+          ----------------
+          {{ mysql_test.stdout if mysql_test.rc == 0 else 'Failed to connect to MySQL server' }}
+
           Database Space Utilization
           -------------------------
-          {{ db_sizes.stdout if db_sizes.stdout is defined else 'Query failed' }}
+          {{ db_sizes.stdout if (db_sizes.stdout is defined and db_sizes.rc == 0) else 'Query failed or skipped' }}
 
           Deadlock Information
           -------------------
-          {{ deadlock_status.stdout if deadlock_status.stdout is defined else 'Query failed' }}
+          {{ deadlock_status.stdout if (deadlock_status.stdout is defined and deadlock_status.rc == 0) else 'Query failed or skipped' }}
 
           Running Processes
           ----------------
-          {{ process_list.stdout if process_list.stdout is defined else 'Query failed' }}
+          {{ process_list.stdout if (process_list.stdout is defined and process_list.rc == 0) else 'Query failed or skipped' }}
 
           Event Scheduler Status
           ---------------------
-          {{ event_status.stdout if event_status.stdout is defined else 'Query failed' }}
+          {{ event_status.stdout if (event_status.stdout is defined and event_status.rc == 0) else 'Query failed or skipped' }}
         dest: "./mysql_reports/mysql_health_report_{{ timestamp }}.txt"
         mode: '0644'
 
