@@ -1,109 +1,154 @@
 ---
 - name: Check MySQL Server Health
   hosts: localhost
-  gather_facts: no
+  connection: local
+  gather_facts: yes
+  become: yes
   vars:
     mysql_host: "20.55.88.203"
-    mysql_user: "mysqlAutomation"
+    mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_port: 3306
- 
+
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install MySQL client
+      apt:
+        name: mysql-client-8.0
+        state: present
+
   tasks:
     - name: Get Database Space Utilization
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          table_schema AS DatabaseName,
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
-        FROM information_schema.tables 
-        GROUP BY table_schema;"
+      command: >
+        mysql 
+        -h{{ mysql_host }} 
+        -P{{ mysql_port }} 
+        -u{{ mysql_user }} 
+        -p{{ mysql_password }} 
+        -N 
+        -e "SELECT 
+            table_schema AS DatabaseName,
+            ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB,
+            ROUND(SUM(data_free) / 1024 / 1024, 2) AS FragmentedSpaceMB
+            FROM information_schema.tables 
+            WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'sys')
+            GROUP BY table_schema;"
       register: db_space
       ignore_errors: yes
- 
+      no_log: true
+
     - name: Get Database Health
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          schema_name AS DatabaseName,
-          'ONLINE' AS Status,
-          (SELECT COUNT(*) FROM information_schema.processlist WHERE command != 'Sleep') AS ActiveRequests,
-          (SELECT COUNT(*) FROM information_schema.processlist) AS ActiveUserConnections,
-          (SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'Waiting for table metadata lock') AS PendingRequests,
-          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS CPUQueueLength
-        FROM information_schema.schemata;"
+      command: >
+        mysql 
+        -h{{ mysql_host }} 
+        -P{{ mysql_port }} 
+        -u{{ mysql_user }} 
+        -p{{ mysql_password }} 
+        -N 
+        -e "SELECT 
+            schema_name AS DatabaseName,
+            'ONLINE' AS Status,
+            (SELECT COUNT(*) FROM performance_schema.threads WHERE thread_type = 'FOREGROUND' AND name LIKE 'thread/sql/one_connection') AS ActiveConnections,
+            (SELECT COUNT(*) FROM performance_schema.events_statements_current WHERE state = 'executing') AS RunningQueries,
+            (SELECT ROUND(SUM(current_number_of_bytes_used)/1024/1024, 2) FROM performance_schema.memory_summary_global_by_event_name) AS MemoryUsageMB,
+            (SELECT COUNT(*) FROM performance_schema.table_handles WHERE owner_thread_id IS NOT NULL) AS LockedTables
+            FROM information_schema.schemata 
+            WHERE schema_name NOT IN ('information_schema', 'performance_schema', 'sys');"
       register: db_health
       ignore_errors: yes
- 
-    - name: Check for Deadlocks
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT COUNT(*) AS Deadlocks 
-        FROM information_schema.innodb_trx t1 
-        INNER JOIN information_schema.innodb_trx t2 
-        WHERE t1.trx_id != t2.trx_id 
-        AND t1.trx_waiting_lock_id = t2.trx_lock_id 
-        AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
+      no_log: true
+
+    - name: Check for Deadlocks and Locks
+      command: >
+        mysql 
+        -h{{ mysql_host }} 
+        -P{{ mysql_port }} 
+        -u{{ mysql_user }} 
+        -p{{ mysql_password }} 
+        -N 
+        -e "SELECT 
+            (SELECT COUNT(*) FROM performance_schema.events_transactions_current 
+             WHERE state = 'ACTIVE' AND autocommit = 0) AS OpenTransactions,
+            (SELECT COUNT(*) FROM performance_schema.data_locks) AS CurrentLocks,
+            (SELECT COUNT(*) FROM performance_schema.data_lock_waits) AS LockWaits,
+            (SELECT VARIABLE_VALUE FROM performance_schema.global_status 
+             WHERE VARIABLE_NAME = 'Innodb_deadlocks') AS TotalDeadlocks;"
       register: deadlocks
       ignore_errors: yes
- 
-    - name: Get MySQL Events Status
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          event_name,
-          status,
-          last_executed,
-          CASE 
-            WHEN execute_at IS NOT NULL THEN 'SCHEDULED'
-            WHEN on_completion = 'PRESERVE' THEN 'RECURRING'
-            ELSE 'ONE-TIME'
-          END as event_type
-        FROM information_schema.events;"
-      register: event_activities
+      no_log: true
+
+    - name: Get Server Status
+      command: >
+        mysql 
+        -h{{ mysql_host }} 
+        -P{{ mysql_port }} 
+        -u{{ mysql_user }} 
+        -p{{ mysql_password }} 
+        -N 
+        -e "SELECT 
+            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS RunningThreads,
+            (SELECT ROUND(VARIABLE_VALUE/1024/1024, 2) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_bytes_data') AS BufferPoolUsageMB,
+            (SELECT ROUND(VARIABLE_VALUE/1024/1024, 2) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_bytes_dirty') AS DirtyPagesMB,
+            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Queries') AS TotalQueries,
+            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Slow_queries') AS SlowQueries;"
+      register: server_status
       ignore_errors: yes
- 
+      no_log: true
+
     - name: Process MySQL Output
       set_fact:
-        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
-        db_health_fact: "{{ db_health.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveRequests', 
-                          'ActiveUserConnections', 'PendingRequests', 'CPUQueueLength']) | list }}"
-        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | trim | int } }}"
-        event_activities_fact: "{{ event_activities.stdout_lines | map('split', '\t') | 
-                                 map('list') | map('dict', ['event_name', 'status', 
-                                 'last_executed', 'event_type']) | list }}"
- 
+        db_space_fact: "{{ db_space.stdout_lines | default([]) | map('split', '\t') | 
+                          map('list') | map('dict', ['DatabaseName', 'SizeMB', 'FragmentedSpaceMB']) | list }}"
+        db_health_fact: "{{ db_health.stdout_lines | default([]) | map('split', '\t') | 
+                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveConnections', 
+                          'RunningQueries', 'MemoryUsageMB', 'LockedTables']) | list }}"
+        deadlocks_fact: "{{ deadlocks.stdout_lines | default([]) | map('split', '\t') | 
+                           map('list') | map('dict', ['OpenTransactions', 'CurrentLocks', 
+                           'LockWaits', 'TotalDeadlocks']) | list }}"
+        server_status_fact: "{{ server_status.stdout_lines | default([]) | map('split', '\t') | 
+                              map('list') | map('dict', ['RunningThreads', 'BufferPoolUsageMB', 
+                              'DirtyPagesMB', 'TotalQueries', 'SlowQueries']) | list }}"
+
     - name: Display Formatted Results
       debug:
         msg: |
           📊 Database Space Utilization:
           {% for item in db_space_fact %}
-           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+           - {{ item.DatabaseName }}:
+             * Total Size: {{ item.SizeMB }} MB
+             * Fragmented Space: {{ item.FragmentedSpaceMB }} MB
           {% endfor %}
-          🚨 Deadlocks:
-          {% if deadlocks_fact.Deadlocks > 0 %}
-           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
-          {% else %}
-           - No deadlocks detected
-          {% endif %}
-          [ℹ️] Events query returned {{ event_activities_fact | length }} rows.
-          🛠 MySQL Events Status:
-          {% for event in event_activities_fact %}
-           - Event: {{ event.event_name }}
-             Status: {{ event.status }}
-             Last Executed: {{ event.last_executed }}
-             Type: {{ event.event_type }}
+    
+          🔒 Locks and Transactions:
+          {% for item in deadlocks_fact %}
+           - Open Transactions: {{ item.OpenTransactions }}
+           - Current Locks: {{ item.CurrentLocks }}
+           - Lock Waits: {{ item.LockWaits }}
+           - Total Deadlocks: {{ item.TotalDeadlocks }}
           {% endfor %}
-          🩺 Database Health Check:
+    
+          🚦 Server Status:
+          {% for item in server_status_fact %}
+           - Running Threads: {{ item.RunningThreads }}
+           - Buffer Pool Usage: {{ item.BufferPoolUsageMB }} MB
+           - Dirty Pages: {{ item.DirtyPagesMB }} MB
+           - Total Queries: {{ item.TotalQueries }}
+           - Slow Queries: {{ item.SlowQueries }}
+          {% endfor %}
+    
+          🩺 Database Health:
           {% if db_health_fact | length > 0 %}
             {% for item in db_health_fact %}
                - Database: {{ item.DatabaseName }}
-                 - Status: {{ item.Status }}
-                 - Active Requests: {{ item.ActiveRequests }}
-                 - Active User Connections: {{ item.ActiveUserConnections }}
-                 - Pending Requests: {{ item.PendingRequests }}
-                 - Running Threads: {{ item.CPUQueueLength }}
+                 * Status: {{ item.Status }}
+                 * Active Connections: {{ item.ActiveConnections }}
+                 * Running Queries: {{ item.RunningQueries }}
+                 * Memory Usage: {{ item.MemoryUsageMB }} MB
+                 * Locked Tables: {{ item.LockedTables }}
             {% endfor %}
           {% else %}
             [❌] No database health data available.
