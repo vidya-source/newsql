@@ -2,24 +2,13 @@
 - name: Check MySQL Server Health
   hosts: localhost
   connection: local
-  gather_facts: yes
-  become: yes
+  gather_facts: no  # Removed facts gathering since we don't need it
+  become: no        # Removed privilege escalation
   vars:
-    mysql_host: "20.55.88.203"
+    mysql_host: "10.112.0.11"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_port: 3306
-
-  pre_tasks:
-    - name: Update apt cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-
-    - name: Install MySQL client
-      apt:
-        name: mysql-client-8.0
-        state: present
 
   tasks:
     - name: Get Database Space Utilization
