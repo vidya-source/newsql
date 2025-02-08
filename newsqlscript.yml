@@ -1,78 +1,94 @@
 ---
 - name: MySQL Health Check Playbook
-  hosts: mysql_servers
+  hosts: localhost
   become: yes
   vars:
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
+    mysql_cmd: "mysql -u{{ mysql_user }} -p{{ mysql_password }} -N -B"
   
-  pre_tasks:
-    - name: Install required collections
-      ansible.builtin.command:
-        cmd: ansible-galaxy collection install community.mysql
-
   tasks:
     - name: Check MySQL Service Status
       service_facts:
       register: mysql_status
 
     - name: Get Database Sizes
-      community.mysql.mysql_query:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: |
-          SELECT 
-            table_schema AS 'Database',
-            ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size_MB'
-          FROM information_schema.tables
-          GROUP BY table_schema;
+      ansible.builtin.shell: |
+        {{ mysql_cmd }} -e "
+        SELECT 
+          table_schema AS 'Database',
+          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size_MB'
+        FROM information_schema.tables
+        GROUP BY table_schema;"
       register: db_sizes
 
     - name: Check for Deadlocks
-      community.mysql.mysql_query:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: |
-          SHOW ENGINE INNODB STATUS\G
+      ansible.builtin.shell: |
+        {{ mysql_cmd }} -e "SHOW ENGINE INNODB STATUS\G"
       register: deadlock_status
 
     - name: Get Running Processes
-      community.mysql.mysql_query:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: |
-          SELECT 
-            id,
-            user,
-            host,
-            db,
-            command,
-            time,
-            state,
-            info
-          FROM information_schema.processlist
-          WHERE command != 'Sleep';
+      ansible.builtin.shell: |
+        {{ mysql_cmd }} -e "
+        SELECT 
+          id,
+          user,
+          host,
+          db,
+          command,
+          time,
+          state,
+          info
+        FROM information_schema.processlist
+        WHERE command != 'Sleep';"
       register: process_list
 
     - name: Check Event Scheduler Status
-      community.mysql.mysql_query:
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        query: |
-          SELECT 
-            event_name,
-            status,
-            last_executed,
-            starts,
-            ends
-          FROM information_schema.events;
+      ansible.builtin.shell: |
+        {{ mysql_cmd }} -e "
+        SELECT 
+          event_name,
+          status,
+          last_executed,
+          starts,
+          ends
+        FROM information_schema.events;"
       register: event_status
 
-    - name: Create Health Report
-      template:
-        src: mysql_health_report.j2
-        dest: "/tmp/mysql_health_report_{{ ansible_date_time.date }}.txt"
+    - name: Create Report Directory
+      ansible.builtin.file:
+        path: /tmp/mysql_reports
+        state: directory
+        mode: '0755'
 
-    - name: Display Health Report
+    - name: Generate Health Report
+      ansible.builtin.copy:
+        content: |
+          MySQL Health Report - {{ ansible_date_time.date }}
+          ================================================
+
+          Service Status
+          -------------
+          MySQL Service Status: {{ mysql_status.ansible_facts.services['mysql.service'].state }}
+
+          Database Space Utilization
+          -------------------------
+          {{ db_sizes.stdout }}
+
+          Deadlock Information
+          -------------------
+          {{ deadlock_status.stdout }}
+
+          Running Processes
+          ----------------
+          {{ process_list.stdout }}
+
+          Event Scheduler Status
+          ---------------------
+          {{ event_status.stdout }}
+        dest: "/tmp/mysql_reports/mysql_health_report_{{ ansible_date_time.date }}.txt"
+        mode: '0644'
+
+    - name: Display Report Location
       debug:
-        msg: "MySQL health report has been generated at /tmp/mysql_health_report_{{ ansible_date_time.date }}.txt"
+        msg: "MySQL health report has been generated at /tmp/mysql_reports/mysql_health_report_{{ ansible_date_time.date }}.txt"
