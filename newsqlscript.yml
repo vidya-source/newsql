@@ -1,37 +1,14 @@
 ---
 - name: Check MySQL Server Health
   hosts: localhost
-  gather_facts: yes
+  gather_facts: no
   vars:
     mysql_host: "10.112.0.11"
     mysql_user: "root"
     mysql_password: "Vidya7747@Bindu"
     mysql_port: 3306
-
+ 
   tasks:
-    - name: Install MySQL client (Debian/Ubuntu)
-      apt:
-        name: mysql-client
-        state: present
-        update_cache: yes
-      become: yes
-      when: ansible_os_family == "Debian"
-      ignore_errors: yes
-
-    - name: Install MySQL client (RedHat/CentOS)
-      yum:
-        name: mysql
-        state: present
-      become: yes
-      when: ansible_os_family == "RedHat"
-      ignore_errors: yes
-
-    - name: Wait for MySQL client installation to complete
-      wait_for:
-        path: /usr/bin/mysql
-        timeout: 30
-      ignore_errors: yes
-
     - name: Get Database Space Utilization
       shell: |
         mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
@@ -42,7 +19,7 @@
         GROUP BY table_schema;"
       register: db_space
       ignore_errors: yes
-
+ 
     - name: Get Database Health
       shell: |
         mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
@@ -56,7 +33,7 @@
         FROM information_schema.schemata;"
       register: db_health
       ignore_errors: yes
-
+ 
     - name: Check for Deadlocks
       shell: |
         mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
@@ -68,7 +45,7 @@
         AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
       register: deadlocks
       ignore_errors: yes
-
+ 
     - name: Get MySQL Events Status
       shell: |
         mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
@@ -84,19 +61,19 @@
         FROM information_schema.events;"
       register: event_activities
       ignore_errors: yes
-
+ 
     - name: Process MySQL Output
       set_fact:
-        db_space_fact: "{{ db_space.stdout_lines | default([]) | map('split', '\t') | 
+        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
                           map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
-        db_health_fact: "{{ db_health.stdout_lines | default([]) | map('split', '\t') | 
+        db_health_fact: "{{ db_health.stdout_lines | map('split', '\t') | 
                           map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveRequests', 
                           'ActiveUserConnections', 'PendingRequests', 'CPUQueueLength']) | list }}"
-        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | default('0') | trim | int } }}"
-        event_activities_fact: "{{ event_activities.stdout_lines | default([]) | map('split', '\t') | 
+        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | trim | int } }}"
+        event_activities_fact: "{{ event_activities.stdout_lines | map('split', '\t') | 
                                  map('list') | map('dict', ['event_name', 'status', 
                                  'last_executed', 'event_type']) | list }}"
-
+ 
     - name: Display Formatted Results
       debug:
         msg: |
@@ -104,16 +81,13 @@
           {% for item in db_space_fact %}
            - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
           {% endfor %}
-    
           🚨 Deadlocks:
           {% if deadlocks_fact.Deadlocks > 0 %}
            - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
           {% else %}
            - No deadlocks detected
           {% endif %}
-    
           [ℹ️] Events query returned {{ event_activities_fact | length }} rows.
-          
           🛠 MySQL Events Status:
           {% for event in event_activities_fact %}
            - Event: {{ event.event_name }}
@@ -121,7 +95,6 @@
              Last Executed: {{ event.last_executed }}
              Type: {{ event.event_type }}
           {% endfor %}
-    
           🩺 Database Health Check:
           {% if db_health_fact | length > 0 %}
             {% for item in db_health_fact %}
