@@ -1,10 +1,10 @@
 ---
 - name: MySQL Health Check Playbook
-  hosts: localhost
+  hosts: 20.55.88.203
   gather_facts: no
   become: no
   vars:
-    mysql_host: "localhost"
+    mysql_host: "20.55.88.203"
     mysql_port: "3306"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
