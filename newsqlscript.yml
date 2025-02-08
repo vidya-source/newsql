@@ -2,143 +2,135 @@
 - name: Check MySQL Server Health
   hosts: localhost
   connection: local
-  gather_facts: no  # Removed facts gathering since we don't need it
-  become: no        # Removed privilege escalation
+  gather_facts: no
   vars:
     mysql_host: "10.112.0.11"
     mysql_user: "mysqlauto"
     mysql_password: "mysqlAutomation"
     mysql_port: 3306
+    mysql_defaults_file: "/tmp/.my.cnf.{{ ansible_date_time.epoch }}"
 
   tasks:
+    - name: Create MySQL config file
+      copy:
+        dest: "{{ mysql_defaults_file }}"
+        content: |
+          [client]
+          host={{ mysql_host }}
+          user={{ mysql_user }}
+          password={{ mysql_password }}
+          port={{ mysql_port }}
+        mode: '0600'
+      register: mysql_config
+
     - name: Get Database Space Utilization
       command: >
-        mysql 
-        -h{{ mysql_host }} 
-        -P{{ mysql_port }} 
-        -u{{ mysql_user }} 
-        -p{{ mysql_password }} 
-        -N 
-        -e "SELECT 
-            table_schema AS DatabaseName,
-            ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB,
-            ROUND(SUM(data_free) / 1024 / 1024, 2) AS FragmentedSpaceMB
-            FROM information_schema.tables 
-            WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'sys')
-            GROUP BY table_schema;"
+        mysql --defaults-file={{ mysql_defaults_file }} -N -e "
+        SELECT 
+          table_schema AS DatabaseName,
+          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB,
+          ROUND(SUM(data_free) / 1024 / 1024, 2) AS FragmentedSpaceMB
+        FROM information_schema.tables 
+        WHERE table_schema NOT IN ('information_schema', 'performance_schema', 'sys')
+        GROUP BY table_schema;"
       register: db_space
       ignore_errors: yes
-      no_log: true
 
     - name: Get Database Health
       command: >
-        mysql 
-        -h{{ mysql_host }} 
-        -P{{ mysql_port }} 
-        -u{{ mysql_user }} 
-        -p{{ mysql_password }} 
-        -N 
-        -e "SELECT 
-            schema_name AS DatabaseName,
-            'ONLINE' AS Status,
-            (SELECT COUNT(*) FROM performance_schema.threads WHERE thread_type = 'FOREGROUND' AND name LIKE 'thread/sql/one_connection') AS ActiveConnections,
-            (SELECT COUNT(*) FROM performance_schema.events_statements_current WHERE state = 'executing') AS RunningQueries,
-            (SELECT ROUND(SUM(current_number_of_bytes_used)/1024/1024, 2) FROM performance_schema.memory_summary_global_by_event_name) AS MemoryUsageMB,
-            (SELECT COUNT(*) FROM performance_schema.table_handles WHERE owner_thread_id IS NOT NULL) AS LockedTables
-            FROM information_schema.schemata 
-            WHERE schema_name NOT IN ('information_schema', 'performance_schema', 'sys');"
+        mysql --defaults-file={{ mysql_defaults_file }} -N -e "
+        SELECT 
+          schema_name AS DatabaseName,
+          'ONLINE' AS Status,
+          (SELECT COUNT(*) FROM performance_schema.threads 
+           WHERE thread_type = 'FOREGROUND' 
+           AND name LIKE 'thread/sql/one_connection') AS ActiveConnections,
+          (SELECT COUNT(*) FROM performance_schema.events_statements_current 
+           WHERE state = 'executing') AS RunningQueries
+        FROM information_schema.schemata 
+        WHERE schema_name NOT IN ('information_schema', 'performance_schema', 'sys');"
       register: db_health
       ignore_errors: yes
-      no_log: true
 
-    - name: Check for Deadlocks and Locks
+    - name: Check for Deadlocks
       command: >
-        mysql 
-        -h{{ mysql_host }} 
-        -P{{ mysql_port }} 
-        -u{{ mysql_user }} 
-        -p{{ mysql_password }} 
-        -N 
-        -e "SELECT 
-            (SELECT COUNT(*) FROM performance_schema.events_transactions_current 
-             WHERE state = 'ACTIVE' AND autocommit = 0) AS OpenTransactions,
-            (SELECT COUNT(*) FROM performance_schema.data_locks) AS CurrentLocks,
-            (SELECT COUNT(*) FROM performance_schema.data_lock_waits) AS LockWaits,
-            (SELECT VARIABLE_VALUE FROM performance_schema.global_status 
-             WHERE VARIABLE_NAME = 'Innodb_deadlocks') AS TotalDeadlocks;"
+        mysql --defaults-file={{ mysql_defaults_file }} -N -e "
+        SELECT COUNT(*) AS Deadlocks 
+        FROM information_schema.innodb_trx t1 
+        INNER JOIN information_schema.innodb_trx t2 
+        WHERE t1.trx_id != t2.trx_id 
+        AND t1.trx_waiting_lock_id = t2.trx_lock_id 
+        AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
       register: deadlocks
       ignore_errors: yes
-      no_log: true
 
-    - name: Get Server Status
+    - name: Get Basic Server Status
       command: >
-        mysql 
-        -h{{ mysql_host }} 
-        -P{{ mysql_port }} 
-        -u{{ mysql_user }} 
-        -p{{ mysql_password }} 
-        -N 
-        -e "SELECT 
-            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS RunningThreads,
-            (SELECT ROUND(VARIABLE_VALUE/1024/1024, 2) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_bytes_data') AS BufferPoolUsageMB,
-            (SELECT ROUND(VARIABLE_VALUE/1024/1024, 2) FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Innodb_buffer_pool_bytes_dirty') AS DirtyPagesMB,
-            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Queries') AS TotalQueries,
-            (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Slow_queries') AS SlowQueries;"
+        mysql --defaults-file={{ mysql_defaults_file }} -N -e "
+        SHOW GLOBAL STATUS 
+        WHERE Variable_name IN 
+        ('Threads_running', 'Queries', 'Slow_queries');"
       register: server_status
       ignore_errors: yes
-      no_log: true
+
+    - name: Remove MySQL config file
+      file:
+        path: "{{ mysql_defaults_file }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Display Raw Output for Debugging
+      debug:
+        msg: |
+          Space Output: {{ db_space.stdout if db_space.stdout is defined else db_space.stderr }}
+          Health Output: {{ db_health.stdout if db_health.stdout is defined else db_health.stderr }}
+          Deadlocks Output: {{ deadlocks.stdout if deadlocks.stdout is defined else deadlocks.stderr }}
+          Status Output: {{ server_status.stdout if server_status.stdout is defined else server_status.stderr }}
 
     - name: Process MySQL Output
       set_fact:
-        db_space_fact: "{{ db_space.stdout_lines | default([]) | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'SizeMB', 'FragmentedSpaceMB']) | list }}"
-        db_health_fact: "{{ db_health.stdout_lines | default([]) | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveConnections', 
-                          'RunningQueries', 'MemoryUsageMB', 'LockedTables']) | list }}"
-        deadlocks_fact: "{{ deadlocks.stdout_lines | default([]) | map('split', '\t') | 
-                           map('list') | map('dict', ['OpenTransactions', 'CurrentLocks', 
-                           'LockWaits', 'TotalDeadlocks']) | list }}"
-        server_status_fact: "{{ server_status.stdout_lines | default([]) | map('split', '\t') | 
-                              map('list') | map('dict', ['RunningThreads', 'BufferPoolUsageMB', 
-                              'DirtyPagesMB', 'TotalQueries', 'SlowQueries']) | list }}"
+        db_space_fact: "{{ db_space.stdout_lines | default([]) }}"
+        db_health_fact: "{{ db_health.stdout_lines | default([]) }}"
+        deadlocks_fact: "{{ deadlocks.stdout_lines | default([]) }}"
+        server_status_fact: "{{ server_status.stdout_lines | default([]) }}"
 
     - name: Display Formatted Results
       debug:
         msg: |
+          MySQL Health Check Results:
+          
           📊 Database Space Utilization:
-          {% for item in db_space_fact %}
-           - {{ item.DatabaseName }}:
-             * Total Size: {{ item.SizeMB }} MB
-             * Fragmented Space: {{ item.FragmentedSpaceMB }} MB
-          {% endfor %}
-    
-          🔒 Locks and Transactions:
-          {% for item in deadlocks_fact %}
-           - Open Transactions: {{ item.OpenTransactions }}
-           - Current Locks: {{ item.CurrentLocks }}
-           - Lock Waits: {{ item.LockWaits }}
-           - Total Deadlocks: {{ item.TotalDeadlocks }}
-          {% endfor %}
-    
-          🚦 Server Status:
-          {% for item in server_status_fact %}
-           - Running Threads: {{ item.RunningThreads }}
-           - Buffer Pool Usage: {{ item.BufferPoolUsageMB }} MB
-           - Dirty Pages: {{ item.DirtyPagesMB }} MB
-           - Total Queries: {{ item.TotalQueries }}
-           - Slow Queries: {{ item.SlowQueries }}
-          {% endfor %}
-    
-          🩺 Database Health:
-          {% if db_health_fact | length > 0 %}
-            {% for item in db_health_fact %}
-               - Database: {{ item.DatabaseName }}
-                 * Status: {{ item.Status }}
-                 * Active Connections: {{ item.ActiveConnections }}
-                 * Running Queries: {{ item.RunningQueries }}
-                 * Memory Usage: {{ item.MemoryUsageMB }} MB
-                 * Locked Tables: {{ item.LockedTables }}
-            {% endfor %}
+          {% if db_space.rc is defined and db_space.rc != 0 %}
+          [❌] Error getting space data: {{ db_space.stderr }}
           {% else %}
-            [❌] No database health data available.
+          {% for line in db_space_fact %}
+           - {{ line }}
+          {% endfor %}
+          {% endif %}
+
+          🩺 Database Health:
+          {% if db_health.rc is defined and db_health.rc != 0 %}
+          [❌] Error getting health data: {{ db_health.stderr }}
+          {% else %}
+          {% for line in db_health_fact %}
+           - {{ line }}
+          {% endfor %}
+          {% endif %}
+
+          🔒 Deadlocks:
+          {% if deadlocks.rc is defined and deadlocks.rc != 0 %}
+          [❌] Error checking deadlocks: {{ deadlocks.stderr }}
+          {% else %}
+          {% for line in deadlocks_fact %}
+           - {{ line }}
+          {% endfor %}
+          {% endif %}
+
+          🚦 Server Status:
+          {% if server_status.rc is defined and server_status.rc != 0 %}
+          [❌] Error getting server status: {{ server_status.stderr }}
+          {% else %}
+          {% for line in server_status_fact %}
+           - {{ line }}
+          {% endfor %}
           {% endif %}
