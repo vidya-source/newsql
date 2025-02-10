@@ -1,4 +1,3 @@
----
-- name: community.mysql
-  src: community.mysql
-  version: "2.0.0"  # You can adjust the version based on your requirements
+collections:
+  - name: community.mysql
+    version: "2.0.0"  # Optional, specify version if needed
