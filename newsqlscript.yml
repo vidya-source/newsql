@@ -3,10 +3,10 @@
   hosts: localhost
   become: true
   vars:
-    mysql_host: "20.55.88.203"
+    mysql_host: "localhost"
     mysql_database: "information_schema"
-    mysql_username: "mysqlauto"
-    mysql_password: "mysqlAutomation"
+    mysql_username: "root"
+    mysql_password: "Vidya7747@Bindu"
     mysql_port: "3306"
 
   tasks:
