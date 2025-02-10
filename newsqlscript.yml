@@ -7,6 +7,7 @@
     mysql_user: "{{mysql_user}}"
     mysql_password: "{{mysql_password}}"
     mysql_port: "{mysql_port}}"
+  ansible_python_interpreter: /usr/bin/python3
  
   tasks:
     - name: Get Database Space Utilization
