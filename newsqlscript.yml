@@ -8,77 +8,50 @@
     mysql_username: "root"
     mysql_password: "Vidya7747@Bindu"
     mysql_port: "3306"
-
   tasks:
     - name: Install MySQL Python module
       ansible.builtin.apt:
         name: python3-mysql.connector
         state: present
-
     - name: Check database space utilization
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: |
+      ansible.builtin.shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
           SELECT table_schema AS DatabaseName,
                  SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
           FROM information_schema.tables
-          GROUP BY table_schema;
+          GROUP BY table_schema;"
       register: db_space
-
     - name: Display database space utilization
       ansible.builtin.debug:
-        msg: "📊 Database Space Utilization: {{ db_space.results }}"
-
+        msg: "📊 Database Space Utilization: {{ db_space.stdout }}"
     - name: Check for deadlocks
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: "SHOW ENGINE INNODB STATUS;"
+      ansible.builtin.shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "SHOW ENGINE INNODB STATUS;"
       register: deadlocks
-
     - name: Display deadlock information
       ansible.builtin.debug:
-        msg: "🚨 Deadlocks: {{ deadlocks.results }}"
-
+        msg: "🚨 Deadlocks: {{ deadlocks.stdout }}"
     - name: Check MySQL event scheduler activities
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: |
+      ansible.builtin.shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "
           SELECT event_name, status
           FROM information_schema.events
-          WHERE status = 'ENABLED';
+          WHERE status = 'ENABLED';"
       register: job_activities
-
     - name: Display MySQL event activities
       ansible.builtin.debug:
-        msg: "🛠 MySQL Event Activities: {{ job_activities.results }}"
-
+        msg: "🛠 MySQL Event Activities: {{ job_activities.stdout }}"
     - name: Check MySQL health status
-      community.mysql.mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_user: "{{ mysql_username }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_database }}"
-        query: "SHOW STATUS LIKE 'Threads_connected';"
+      ansible.builtin.shell: |
+        mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} --database={{ mysql_database }} -e "SHOW STATUS LIKE 'Threads_connected';"
       register: db_health
-
     - name: Display MySQL health status
       ansible.builtin.debug:
-        msg: "🩺 Database Health Check: {{ db_health.results }}"
-
+        msg: "🩺 Database Health Check: {{ db_health.stdout }}"
     - name: Execute remote command via SSH to check MySQL version
       ansible.builtin.shell: |
         mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} -e 'SELECT VERSION();'
       register: mysql_version
-
     - name: Display MySQL version
       ansible.builtin.debug:
         msg: "ℹ️ MySQL Version (via SSH): {{ mysql_version.stdout }}"
