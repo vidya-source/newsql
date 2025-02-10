@@ -23,10 +23,3 @@
           GROUP BY table_schema;
       register: db_space
       ignore_errors: yes
-
- 
-   
-    - name: Process MySQL Output
-      set_fact:
-        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
