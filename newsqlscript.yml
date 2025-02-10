@@ -10,15 +10,20 @@
  
   tasks:
     - name: Get Database Space Utilization
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          table_schema AS DatabaseName,
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
-        FROM information_schema.tables 
-        GROUP BY table_schema;"
+      community.mysql.mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        login_port: "{{ mysql_port }}"
+        query: |
+          SELECT 
+            table_schema AS DatabaseName,
+            ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
+          FROM information_schema.tables 
+          GROUP BY table_schema;
       register: db_space
       ignore_errors: yes
+
  
    
     - name: Process MySQL Output
