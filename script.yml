@@ -1,0 +1,110 @@
+---
+- name: Check MySQL Server Health
+  hosts: localhost
+  gather_facts: no
+  vars:
+    mysql_host: "10.112.0.11"
+    mysql_user: "mysqlauto"
+    mysql_password: "mysqlAutomation"
+    mysql_port: 3306
+ 
+  tasks:
+    - name: Get Database Space Utilization
+      shell: |
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT 
+          table_schema AS DatabaseName,
+          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
+        FROM information_schema.tables 
+        GROUP BY table_schema;"
+      register: db_space
+      ignore_errors: yes
+ 
+    - name: Get Database Health
+      shell: |
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT 
+          schema_name AS DatabaseName,
+          'ONLINE' AS Status,
+          (SELECT COUNT(*) FROM information_schema.processlist WHERE command != 'Sleep') AS ActiveRequests,
+          (SELECT COUNT(*) FROM information_schema.processlist) AS ActiveUserConnections,
+          (SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'Waiting for table metadata lock') AS PendingRequests,
+          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS CPUQueueLength
+        FROM information_schema.schemata;"
+      register: db_health
+      ignore_errors: yes
+ 
+    - name: Check for Deadlocks
+      shell: |
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT COUNT(*) AS Deadlocks 
+        FROM information_schema.innodb_trx t1 
+        INNER JOIN information_schema.innodb_trx t2 
+        WHERE t1.trx_id != t2.trx_id 
+        AND t1.trx_waiting_lock_id = t2.trx_lock_id 
+        AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
+      register: deadlocks
+      ignore_errors: yes
+ 
+    - name: Get MySQL Events Status
+      shell: |
+        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
+        SELECT 
+          event_name,
+          status,
+          last_executed,
+          CASE 
+            WHEN execute_at IS NOT NULL THEN 'SCHEDULED'
+            WHEN on_completion = 'PRESERVE' THEN 'RECURRING'
+            ELSE 'ONE-TIME'
+          END as event_type
+        FROM information_schema.events;"
+      register: event_activities
+      ignore_errors: yes
+ 
+    - name: Process MySQL Output
+      set_fact:
+        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
+                          map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
+        db_health_fact: "{{ db_health.stdout_lines | map('split', '\t') | 
+                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveRequests', 
+                          'ActiveUserConnections', 'PendingRequests', 'CPUQueueLength']) | list }}"
+        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | trim | int } }}"
+        event_activities_fact: "{{ event_activities.stdout_lines | map('split', '\t') | 
+                                 map('list') | map('dict', ['event_name', 'status', 
+                                 'last_executed', 'event_type']) | list }}"
+ 
+    - name: Display Formatted Results
+      debug:
+        msg: |
+          📊 Database Space Utilization:
+          {% for item in db_space_fact %}
+           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% endfor %}
+          🚨 Deadlocks:
+          {% if deadlocks_fact.Deadlocks > 0 %}
+           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% else %}
+           - No deadlocks detected
+          {% endif %}
+          [ℹ️] Events query returned {{ event_activities_fact | length }} rows.
+          🛠 MySQL Events Status:
+          {% for event in event_activities_fact %}
+           - Event: {{ event.event_name }}
+             Status: {{ event.status }}
+             Last Executed: {{ event.last_executed }}
+             Type: {{ event.event_type }}
+          {% endfor %}
+          🩺 Database Health Check:
+          {% if db_health_fact | length > 0 %}
+            {% for item in db_health_fact %}
+               - Database: {{ item.DatabaseName }}
+                 - Status: {{ item.Status }}
+                 - Active Requests: {{ item.ActiveRequests }}
+                 - Active User Connections: {{ item.ActiveUserConnections }}
+                 - Pending Requests: {{ item.PendingRequests }}
+                 - Running Threads: {{ item.CPUQueueLength }}
+            {% endfor %}
+          {% else %}
+            [❌] No database health data available.
+          {% endif %}
