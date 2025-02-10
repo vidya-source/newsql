@@ -6,6 +6,7 @@
     mysql_host: "localhost"
     mysql_user: "root"
     mysql_password: "Vidya7747@Bindu"
+    mysql_port: "3306"
  
   tasks:
     - name: Get Database Space Utilization
