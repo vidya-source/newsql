@@ -1,17 +1,141 @@
 ---
-- name: Check MySQL database space
-  hosts: mysql_servers
-  become: yes
+- name: Automated Azure License Provisioning with ServiceNow Integration
+  hosts: localhost
   gather_facts: no
-  tasks:
-    - name: Check MySQL Database space
-      mysql_db:
-        login_user: "mysqlauto"
-        login_password: "mysqlAutomation"
-        login_host: "10.112.0.11"
-        query: "SELECT table_schema 'DB Name', SUM(data_length + index_length) / 1024 / 1024 'DB Size in MB' FROM information_schema.tables GROUP BY table_schema;"
-      register: mysql_db_space
+  vars:
+    azure_tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
+    azure_client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
+    azure_client_secret: "{{azure_client_secret}}"
+    service_now_instance: "https://dev247928.service-now.com"
+    service_now_user: "admin"
+    service_now_password: "%ml4Vs9RXE/s"
+    approval_required: true
+    servicenow_table: "sc_request"
 
-    - name: Display MySQL space usage
+  tasks:
+    - name: Fetch pending requests from ServiceNow
+      uri:
+        url: "https://{{ service_now_instance }}/api/now/table/{{ servicenow_table }}"
+        method: GET
+        user: "{{ service_now_user }}"
+        password: "{{ service_now_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: servicenow_response
+
+    - name: Display request details
       debug:
-        var: mysql_db_space.query_result
+        msg: "{{ servicenow_response.json.result }}"
+
+    - name: Authenticate with Azure and get access token
+      uri:
+        url: "https://login.microsoftonline.com/{{ azure_tenant_id }}/oauth2/token"
+        method: POST
+        headers:
+          Content-Type: "application/x-www-form-urlencoded"
+        body: "grant_type=client_credentials&client_id={{ azure_client_id }}&client_secret={{ azure_client_secret }}&resource=https://management.azure.com/"
+        body_format: form-urlencoded
+        return_content: yes
+      register: auth_response
+      
+    - name: Set Azure Access Token
+      set_fact:
+        azure_access_token: "{{ auth_response.json.access_token }}"
+      
+    - name: Retrieve License Request from ServiceNow
+      uri:
+        url: "https://{{ service_now_instance }}/api/now/table/incident?sysparm_query=state=1"
+        method: GET
+        user: "{{ service_now_user }}"
+        password: "{{ service_now_password }}"
+        return_content: yes
+        headers:
+          Accept: "application/json"
+        force_basic_auth: yes
+      register: request_details
+      
+    - name: Check License Availability in Azure
+      uri:
+        url: "https://management.azure.com/providers/Microsoft.Licensing/licenses?api-version=2021-10-01"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ azure_access_token }}"
+          Content-Type: "application/json"
+        return_content: yes
+      register: license_availability
+      
+    - name: Handle License Unavailability
+      uri:
+        url: "https://{{ service_now_instance }}/api/now/table/incident/{{ request_details.json.result[0].sys_id }}"
+        method: PATCH
+        user: "{{ service_now_user }}"
+        password: "{{ service_now_password }}"
+        return_content: yes
+        headers:
+          Accept: "application/json"
+        body_format: json
+        body:
+          state: "2"  # Pending state
+          comments: "Requested license unavailable. Request placed on hold."
+        force_basic_auth: yes
+      when: license_availability.json.available == false
+
+    - name: Wait for Approval (If Required)
+      pause:
+        seconds: 30
+      when: approval_required and license_availability.json.available == true
+      
+    - name: Assign License to User
+      uri:
+        url: "https://management.azure.com/providers/Microsoft.Licensing/assignLicense?api-version=2021-10-01"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ azure_access_token }}"
+          Content-Type: "application/json"
+        body:
+          user_email: "{{ request_details.json.result[0].requested_for.value }}"
+          charge_code: "{{ request_details.json.result[0].charge_code }}"
+          license_type: "{{ request_details.json.result[0].short_description }}"
+        body_format: json
+        return_content: yes
+      register: license_assignment_result
+      when: license_availability.json.available == true
+
+    - name: Log License Assignment Activity
+      debug:
+        msg: "User {{ request_details.json.result[0].requested_for.value }} successfully assigned license {{ request_details.json.result[0].short_description }}."
+      when: license_assignment_result is success
+
+    - name: Update ServiceNow Ticket - Assignment Successful
+      uri:
+        url: "https://{{ service_now_instance }}/api/now/table/incident/{{ request_details.json.result[0].sys_id }}"
+        method: PATCH
+        user: "{{ service_now_user }}"
+        password: "{{ service_now_password }}"
+        return_content: yes
+        headers:
+          Accept: "application/json"
+        body_format: json
+        body:
+          state: "3"  # Resolved state
+          close_notes: "License {{ request_details.json.result[0].short_description }} assigned to {{ request_details.json.result[0].requested_for.value }}."
+        force_basic_auth: yes
+      when: license_assignment_result is success
+
+    - name: Notify User about License Assignment
+      debug:
+        msg: "Notification sent to {{ request_details.json.result[0].requested_for.value }} about successful license assignment."
+
+    - name: Mark ServiceNow Request as Closed
+      uri:
+        url: "https://{{ service_now_instance }}/api/now/table/incident/{{ request_details.json.result[0].sys_id }}"
+        method: PATCH
+        user: "{{ service_now_user }}"
+        password: "{{ service_now_password }}"
+        return_content: yes
+        headers:
+          Accept: "application/json"
+        body_format: json
+        body:
+          state: "7"  # Closed state
+        force_basic_auth: yes
