@@ -157,7 +157,7 @@
     - name: License Assignment Process
       block:
         # New user creation code that you provided
-        - name: Create User if Not Exists
+        - name: Create User
           uri:
             url: "{{ graph_api_endpoint }}/users"
             method: POST
@@ -171,7 +171,7 @@
               userPrincipalName: "LA@amitomar63gmail.onmicrosoft.com"
               passwordProfile:
                 forceChangePasswordNextSignIn: true
-                password: "TempPass@123"
+                password: "LA@123"
             body_format: json
           register: user_creation
           when: user_check.status == 404
