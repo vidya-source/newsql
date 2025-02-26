@@ -79,47 +79,53 @@
       debug:
         msg: "Available Licenses: {{ azure_license_response.json }}"      
 
-    - name: Process each ServiceNow request
+    - name: Check if requested license is available
+      set_fact:
+        license_info: >-
+          {{ azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', item.short_description) | list | first | default({}) }}
+        is_license_available: >-
+          {% set license = azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', item.short_description) | list | first | default({}) %}
+          {% if license and license.prepaidUnits is defined and license.consumedUnits is defined %}
+            {% set available = license.prepaidUnits.enabled - license.consumedUnits %}
+            {{ available > 0 }}
+          {% else %}
+            false
+          {% endif %}
       loop: "{{ servicenow_response.json.result }}"
-      vars:
-        current_request: "{{ item }}"
-        requested_license_type: "{{ item.short_description }}"
-      block:
-        - name: Check if requested license is available
-          set_fact:
-            license_info: >-
-              {{ azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', requested_license_type) | list | first | default({}) }}
-            is_license_available: >-
-              {% set license = azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', requested_license_type) | list | first | default({}) %}
-              {% if license and license.prepaidUnits is defined and license.consumedUnits is defined %}
-                {% set available = license.prepaidUnits.enabled - license.consumedUnits %}
-                {{ available > 0 }}
-              {% else %}
-                false
-              {% endif %}
-          
-        - name: Set approval state based on license availability
-          set_fact:
-            approval_state: "{{ 'approved' if is_license_available | bool else 'rejected' }}"
-            approval_message: "{{ 'License is available' if is_license_available | bool else 'No licenses available for the requested type' }}"
-        
-        - name: Update ServiceNow request with approval decision
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ current_request.sys_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            body_format: json
-            body:
-              approval: "{{ approval_state }}"
-              work_notes: "{{ approval_message }}"
-            status_code: 200
-          register: update_response
-        
-        - name: Log the update results
-          debug:
-            msg: "Updated request {{ current_request.number }} to {{ approval_state }} - Response: {{ update_response.status }}"
+      register: license_check_results
+      
+    - name: Set approval state based on license availability
+      set_fact:
+        approval_states: >-
+          {% set result = [] %}
+          {% for i in range(servicenow_response.json.result | length) %}
+            {% set current_request = servicenow_response.json.result[i] %}
+            {% set is_available = license_check_results.results[i].ansible_facts.is_license_available | bool %}
+            {% set approval = 'approved' if is_available else 'rejected' %}
+            {% set message = 'License is available' if is_available else 'No licenses available for the requested type' %}
+            {% set _ = result.append({'sys_id': current_request.sys_id, 'number': current_request.number, 'approval': approval, 'message': message}) %}
+          {% endfor %}
+          {{ result }}
+    
+    - name: Update ServiceNow request with approval decision
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        body_format: json
+        body:
+          approval: "{{ item.approval }}"
+          work_notes: "{{ item.message }}"
+        status_code: 200
+      loop: "{{ approval_states }}"
+      register: update_responses
+    
+    - name: Log the update results
+      debug:
+        msg: "Updated request {{ item.item.number }} to {{ item.item.approval }} - Response: {{ item.status }}"
+      loop: "{{ update_responses.results }}"
 
     - name: Generate summary report
       debug:
@@ -127,5 +133,5 @@
           License Request Processing Summary:
           --------------------------------------
           Total Requests: {{ servicenow_response.json.result | length }}
-          Approved: {{ servicenow_response.json.result | selectattr('approval', 'equalto', 'approved') | list | length }}
-          Rejected: {{ servicenow_response.json.result | selectattr('approval', 'equalto', 'rejected') | list | length }}
+          Approved: {{ approval_states | selectattr('approval', 'equalto', 'approved') | list | length }}
+          Rejected: {{ approval_states | selectattr('approval', 'equalto', 'rejected') | list | length }}
