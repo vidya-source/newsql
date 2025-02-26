@@ -76,30 +76,41 @@
     - name: Display license availability
       debug:
         msg: "Available Licenses: {{ azure_license_response.json }}"
-    - name: Process requests and update ServiceNow
-      loop: "{{ servicenow_response.json.result }}"
-      vars:
-        requested_license: "{{ item.short_description }}"
+    
+    - name: Process each request and update ServiceNow
+      set_fact:
         license_available: false
-      block:
-        - name: Check license availability
-          set_fact:
-            license_available: "{{ (azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', requested_license) | map(attribute='prepaidUnits.enabled') | first | int) > (azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', requested_license) | map(attribute='consumedUnits') | first | int) }}"
-
-        - name: Set request status based on availability
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.sys_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            body:
-              state: "{{ 'Approved' if license_available else 'Rejected' }}"
-              comments: "License {{ 'approved' if license_available else 'not available, request rejected' }}"
-            body_format: json
-            return_content: yes
-          register: update_response
-        
-        - name: Display update response
-          debug:
-            msg: "Request {{ item.number }} has been {{ 'approved' if license_available else 'rejected' }}."
+      loop: "{{ servicenow_response.json.result }}"
+      loop_control:
+        loop_var: request
+      
+    - name: Check license availability
+      set_fact:
+        license_available: "{{ (azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', request.short_description) | map(attribute='prepaidUnits.enabled') | first | int) > (azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', request.short_description) | map(attribute='consumedUnits') | first | int) }}"
+      loop: "{{ servicenow_response.json.result }}"
+      loop_control:
+        loop_var: request
+      
+    - name: Update request status in ServiceNow
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ request.sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        body:
+          state: "{{ 'Approved' if license_available else 'Rejected' }}"
+          comments: "License {{ 'approved' if license_available else 'not available, request rejected' }}"
+        body_format: json
+        return_content: yes
+      register: update_response
+      loop: "{{ servicenow_response.json.result }}"
+      loop_control:
+        loop_var: request
+      
+    - name: Display update response
+      debug:
+        msg: "Request {{ request.number }} has been {{ 'approved' if license_available else 'rejected' }}."
+      loop: "{{ servicenow_response.json.result }}"
+      loop_control:
+        loop_var: request
