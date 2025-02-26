@@ -1,4 +1,6 @@
----
+Here's the complete Ansible script with your original code plus the continuation for checking license availability and updating ServiceNow requests:
+
+```yaml
 - name: Fetch Pending ServiceNow Requests
   hosts: localhost
   gather_facts: no
@@ -78,150 +80,55 @@
     
     - name: Display license availability
       debug:
-        msg: "Available Licenses: {{ azure_license_response.json }}"
+        msg: "Available Licenses: {{ azure_license_response.json }}"      
+
+    - name: Process each ServiceNow request
+      loop: "{{ servicenow_response.json.result }}"
+      vars:
+        current_request: "{{ item }}"
+        requested_license_type: "{{ item.short_description }}"
+      block:
+        - name: Check if requested license is available
+          set_fact:
+            license_info: >-
+              {{ azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', requested_license_type) | list | first | default({}) }}
+            is_license_available: >-
+              {% set license = azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', requested_license_type) | list | first | default({}) %}
+              {% if license and license.prepaidUnits is defined and license.consumedUnits is defined %}
+                {% set available = license.prepaidUnits.enabled - license.consumedUnits %}
+                {{ available > 0 }}
+              {% else %}
+                false
+              {% endif %}
+          
+        - name: Set approval state based on license availability
+          set_fact:
+            approval_state: "{{ 'approved' if is_license_available | bool else 'rejected' }}"
+            approval_message: "{{ 'License is available' if is_license_available | bool else 'No licenses available for the requested type' }}"
         
-    # New tasks for approval workflow
-    - name: Fetch pending approvals from ServiceNow
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/sysapproval_approver?sysparm_query=state=requested"
-        method: GET
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        return_content: yes
-      register: pending_approvals
-      
-    - name: Display pending approvals
+        - name: Update ServiceNow request with approval decision
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ current_request.sys_id }}"
+            method: PATCH
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            body_format: json
+            body:
+              approval: "{{ approval_state }}"
+              work_notes: "{{ approval_message }}"
+            status_code: 200
+          register: update_response
+        
+        - name: Log the update results
+          debug:
+            msg: "Updated request {{ current_request.number }} to {{ approval_state }} - Response: {{ update_response.status }}"
+
+    - name: Generate summary report
       debug:
         msg: |
-          Pending Approvals:
-          {% for approval in pending_approvals.json.result %}
-          Approval ID: {{ approval.sys_id }}
-          Document ID: {{ approval.document_id }}
-          Approver: {{ approval.approver.display_value }}
-          ------------------------------------------------
-          {% endfor %}
-    
-    - name: Process approvals
-      block:
-        - name: Set up a loop for each pending approval
-          set_fact:
-            current_approval: "{{ item }}"
-          loop: "{{ pending_approvals.json.result }}"
-          register: approval_loop
-          
-        - name: Get detailed request information
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ current_approval.document_id }}"
-            method: GET
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            return_content: yes
-          register: request_details
-          loop: "{{ approval_loop.results }}"
-          loop_control:
-            loop_var: current_loop_item
-          vars:
-            current_approval: "{{ current_loop_item.ansible_facts.current_approval }}"
-            
-        - name: Check license availability for this request
-          set_fact:
-            license_available: >-
-              {% set requested_license = current_loop_item.request_details.json.result.short_description | default('') %}
-              {% set available = false %}
-              {% for license in azure_license_response.json.value %}
-                {% if license.skuPartNumber in requested_license and (license.prepaidUnits.enabled - license.consumedUnits) > 0 %}
-                  {% set available = true %}
-                {% endif %}
-              {% endfor %}
-              {{ available }}
-          loop: "{{ approval_loop.results }}"
-          loop_control:
-            loop_var: current_loop_item
-          register: license_check_results
-            
-        - name: Decide on approval based on license availability
-          set_fact:
-            approval_decision: "{{ 'approved' if current_loop_item.ansible_facts.license_available else 'rejected' }}"
-          loop: "{{ license_check_results.results }}"
-          loop_control:
-            loop_var: current_loop_item
-          register: approval_decisions
-            
-        - name: Update approval status in ServiceNow
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/sysapproval_approver/{{ current_loop_item.ansible_facts.current_approval.sys_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            body_format: json
-            body:
-              state: "{{ current_loop_item.ansible_facts.approval_decision }}"
-              comments: "{{ 'Automatically approved - license available' if current_loop_item.ansible_facts.approval_decision == 'approved' else 'Automatically rejected - license not available' }}"
-            force_basic_auth: yes
-            status_code: 200
-            headers:
-              Content-Type: "application/json"
-          loop: "{{ approval_decisions.results }}"
-          loop_control:
-            loop_var: current_loop_item
-          register: approval_updates
-            
-        - name: Update request status in ServiceNow
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ current_loop_item.ansible_facts.current_approval.document_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            body_format: json
-            body:
-              state: "{{ '3' if current_loop_item.ansible_facts.approval_decision == 'approved' else '4' }}"  # 3=Approved, 4=Rejected
-              comments: "{{ 'License request was approved' if current_loop_item.ansible_facts.approval_decision == 'approved' else 'License request was rejected - no available licenses' }}"
-            force_basic_auth: yes
-            status_code: 200
-            headers:
-              Content-Type: "application/json"
-          loop: "{{ approval_decisions.results }}"
-          loop_control:
-            loop_var: current_loop_item
-          register: request_updates
-      when: pending_approvals.json.result | length > 0
-    
-    - name: Provision license if approved
-      block:
-        - name: Get user details for approved requests
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/sys_user/{{ item.ansible_facts.current_approval.document_id }}"
-            method: GET
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            return_content: yes
-          loop: "{{ approval_decisions.results }}"
-          loop_control:
-            label: "Processing user for {{ item.ansible_facts.current_approval.document_id }}"
-          when: item.ansible_facts.approval_decision == 'approved'
-          register: user_details
-    
-        - name: Assign license in Azure for approved requests
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ item.json.result.email }}/assignLicense"
-            method: POST
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              addLicenses:
-                - skuId: "{{ azure_license_response.json.value | selectattr('skuPartNumber', 'in', item.json.result.short_description) | map(attribute='id') | first }}"
-              removeLicenses: []
-            status_code: 200
-          loop: "{{ user_details.results }}"
-          when: item is defined and item.skipped is not defined
-          register: license_assignments
-      when: approval_decisions.results is defined and approval_decisions.results | length > 0
-    
-    - name: Notify users of request status
-      debug:
-        msg: "This would notify users of their request status via email or ServiceNow notification"
+          License Request Processing Summary:
+          --------------------------------------
+          Total Requests: {{ servicenow_response.json.result | length }}
+          Approved: {{ servicenow_response.json.result | selectattr('approval', 'equalto', 'approved') | list | length }}
+          Rejected: {{ servicenow_response.json.result | selectattr('approval', 'equalto', 'rejected') | list | length }}
