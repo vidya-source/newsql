@@ -159,7 +159,7 @@
         # Add a task to check if the user exists first
         - name: Check if user exists
           uri:
-            url: "{{ graph_api_endpoint }}/users/AS3@amitomar63gmail.onmicrosoft.com"
+            url: "{{ graph_api_endpoint }}/users/LA1@amitomar63gmail.onmicrosoft.com"
             method: GET
             headers:
               Authorization: "Bearer {{ access_token }}"
@@ -184,7 +184,7 @@
               userPrincipalName: "LA1@amitomar63gmail.onmicrosoft.com"
               passwordProfile:
                 forceChangePasswordNextSignIn: true
-                password: "LA12@123"
+                password: "HELLO@123"
             body_format: json
             status_code: [201]
           register: user_creation
