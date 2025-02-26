@@ -156,8 +156,21 @@
 
     - name: License Assignment Process
       block:
-        # New user creation code that you provided
-        - name: Create User
+        # Add a task to check if the user exists first
+        - name: Check if user exists
+          uri:
+            url: "{{ graph_api_endpoint }}/users/AS3@amitomar63gmail.onmicrosoft.com"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 404]
+            return_content: yes
+          register: user_check
+          ignore_errors: yes
+        
+        # Now the user creation code can use the user_check variable
+        - name: Create User if Not Exists
           uri:
             url: "{{ graph_api_endpoint }}/users"
             method: POST
@@ -166,54 +179,53 @@
               Content-Type: "application/json"
             body:
               accountEnabled: true
-              displayName: "licenseAutomation"
-              mailNickname: "LA"
-              userPrincipalName: "LA@amitomar63gmail.onmicrosoft.com"
+              displayName: "LicenseAutomation
+              mailNickname: "LA1"
+              userPrincipalName: "LA1@amitomar63gmail.onmicrosoft.com"
               passwordProfile:
                 forceChangePasswordNextSignIn: true
-                password: "LA@123"
+                password: "LA12@123"
             body_format: json
+            status_code: [201]
           register: user_creation
-          when: user_check.status == 404
+          when: user_check.status == 404 or user_check is failed
 
         - name: Debug - Show User Creation Status
           debug:
-            msg: "User Creation: {{ 'Successful' if user_creation.status in [200, 201] else 'Unsuccessful' }}"
-          when: user_check.status == 404
-
-        - name: Prepare license assignments
+            msg: "User Creation: {{ 'Successful' if user_creation.status == 201 else 'Unsuccessful or already exists' }}"
+          when: user_check.status == 404 or user_check is failed
+        
+        # Get user ID for license assignment
+        - name: Get User ID
+          set_fact:
+            user_id: "{{ user_creation.json.id | default('') }}"
+          when: user_creation.status is defined and user_creation.status == 201
+        
+        - name: Get User ID for existing user
+          set_fact:
+            user_id: "{{ user_check.json.id | default('') }}"
+          when: user_check.status is defined and user_check.status == 200
+        
+        # Create a simplified license assignment list
+        - name: Create license assignment list
           set_fact:
             license_assignments: >-
               {%- set assignments = [] -%}
-              {%- for user in user_creation_result.results | default([]) -%}
-                {%- if user.status == 201 or user.status == 409 -%}
-                  {%- set user_id = user.json.id | default('') -%}
-                  {%- if user.status == 409 -%}
-                    {%- set user_lookup_url = graph_api_endpoint + '/users?$filter=userPrincipalName eq \'' + user.item.user_email + '\'' -%}
-                    {%- set user_lookup = lookup('url', user_lookup_url, headers={'Authorization': 'Bearer ' + access_token}) | from_json -%}
-                    {%- if user_lookup.value | length > 0 -%}
-                      {%- set user_id = user_lookup.value[0].id -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                  {%- for license in azure_license_response.json.value -%}
-                    {%- if license.skuPartNumber | lower == user.item.license_type | lower -%}
-                      {%- set assignment = {
-                        'user_id': user_id,
-                        'license_id': license.id,
-                        'request_id': user.item.request_id,
-                        'request_number': user.item.request_number
-                      } -%}
-                      {%- set _ = assignments.append(assignment) -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
+              {%- for license in azure_license_response.json.value -%}
+                {%- set assignment = {
+                  'user_id': user_id,
+                  'license_id': license.id,
+                  'license_type': license.skuPartNumber
+                } -%}
+                {%- set _ = assignments.append(assignment) -%}
               {%- endfor -%}
               {{ assignments }}
-          when: user_creation_result is defined
+          when: user_id is defined
 
-        - name: Assign licenses to users
+        # Assign licenses to the user
+        - name: Assign licenses to user
           uri:
-            url: "{{ graph_api_endpoint }}/users/{{ item.user_id }}/assignLicense"
+            url: "{{ graph_api_endpoint }}/users/{{ user_id }}/assignLicense"
             method: POST
             headers:
               Authorization: "Bearer {{ access_token }}"
@@ -227,61 +239,21 @@
             return_content: yes
           register: license_assignment_result
           loop: "{{ license_assignments }}"
-          when: license_assignments is defined
+          when: user_id is defined and license_assignments is defined
           ignore_errors: yes
 
-        - name: Update License Database (Custom DB or ServiceNow)
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/license_tracking"  # Assuming a license_tracking table exists
-            method: POST
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            headers:
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              request_number: "{{ item.request_number }}"
-              license_id: "{{ item.license_id }}"
-              user_id: "{{ item.user_id }}"
-              assignment_date: "{{ ansible_date_time.iso8601 }}"
-              status: "active"
-            return_content: yes
-          loop: "{{ license_assignments }}"
-          when: license_assignments is defined
-          ignore_errors: yes
-          register: license_db_updates
-
-        - name: Update ServiceNow request with license assignment details
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.request_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            headers:
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              work_notes: "License has been assigned and Azure account created. License ID: {{ item.license_id }}"
-              state: "closed_complete"
-            return_content: yes
-          loop: "{{ license_assignments }}"
-          when: license_assignments is defined
-          register: servicenow_updates
-
+        # Display license assignment results
         - name: Generate license assignment report
           debug:
             msg: |
               License Assignment Summary:
               --------------------------------------
-              Total Approved Requests: {{ approved_users | length | default(0) }}
-              Azure Accounts Created: {{ user_creation_result.results | selectattr('status', 'equalto', 201) | list | length | default(0) }}
+              User ID: {{ user_id | default('None') }}
+              User Created: {{ user_creation.status == 201 | default(false) }}
               Licenses Assigned: {{ license_assignment_result.results | selectattr('status', 'in', [200, 201]) | list | length | default(0) }}
-              License Database Updates: {{ license_db_updates.results | selectattr('status', 'in', [200, 201]) | list | length | default(0) }}
               
               Details:
               {% for assignment in license_assignments | default([]) %}
-              - Request: {{ assignment.request_number }}, License ID: {{ assignment.license_id }}
+              - License ID: {{ assignment.license_id }}, Type: {{ assignment.license_type }}
               {% endfor %}
           when: license_assignments is defined
