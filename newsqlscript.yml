@@ -76,12 +76,13 @@
                   enabled: 10
                 consumedUnits: 7  
     
-    - name: Process Approvals (Simulated)
-      debug:
-        msg: |
-          Simulating approval process: All requests are auto-approved for testing.
+    - name: Prompt for Approval
+      pause:
+        prompt: "Approve the requests? (yes/no)"
+      register: user_approval
     
     - name: Assign License if Approved
+      when: user_approval.user_input | lower == 'yes'
       debug:
         msg: |
-          Assigning license for approved requests (simulated process).
+          Assigning license for approved requests (manual approval received).
