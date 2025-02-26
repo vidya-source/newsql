@@ -1,6 +1,3 @@
-Here's the complete Ansible script with your original code plus the continuation for checking license availability and updating ServiceNow requests:
-
-```yaml
 - name: Fetch Pending ServiceNow Requests
   hosts: localhost
   gather_facts: no
