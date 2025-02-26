@@ -76,13 +76,16 @@
                   enabled: 10
                 consumedUnits: 7  
     
-    - name: Prompt for Approval
+    - name: Prompt for Individual Approval
       pause:
-        prompt: "Approve the requests? (yes/no)"
-      register: user_approval
-    
+        prompt: "Approve request {{ item.number }} ({{ item.short_description }})? (yes/no)"
+      register: user_approvals
+      loop: "{{ servicenow_response.json.result }}"
+
     - name: Assign License if Approved
-      when: user_approval.user_input | lower == 'yes'
       debug:
-        msg: |
-          Assigning license for approved requests (manual approval received).
+        msg: "Assigning license for request {{ item.number }}"
+      when: user_approvals.results[item.index].user_input | lower == 'yes'
+      loop: "{{ servicenow_response.json.result }}"
+      loop_control:
+        index_var: index
