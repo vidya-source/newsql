@@ -11,6 +11,7 @@
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
     client_secret: "{{client_secret}}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
+    
   tasks:
     - name: Fetch pending requests from ServiceNow
       uri:
@@ -21,7 +22,15 @@
         force_basic_auth: yes
         return_content: yes
       register: servicenow_response
- 
+
+    - name: Store Requested License Type
+      set_fact:
+        requested_license_map: >-
+          {{
+            servicenow_response.json.result |
+            items2dict(key_name='number', value_name='short_description')
+          }}
+          
     - name: Display request details
       debug:
         msg: |
@@ -33,6 +42,7 @@
           Description: {{ request.get('description', 'Not Provided') }}
           ------------------------------------------------
           {% endfor %}
+          
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -45,10 +55,11 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
- 
+
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
+    
     - name: Check License Availability in Azure
       uri:
         url: "{{ graph_api_endpoint }}/subscribedSkus"
@@ -58,59 +69,191 @@
           Content-Type: "application/json"
         return_content: yes
       register: azure_license_response
+      
     - name: Add dummy license data for testing (remove this after u have real lic)
       set_fact:
         azure_license_response:
           json:
             value:
-              - id: "dummy-license-1"
+              - id: "c7df2760-2c81-4ef7-b578-5b5392b571df"  # Using proper GUID format
                 skuPartNumber: "TEST_LICENSE_1"
                 prepaidUnits:
                   enabled: 5
                 consumedUnits: 3
-              - id: "dummy-license-2"
+              - id: "f30db892-07e9-47e9-837c-80727f46fd3d"  # Using proper GUID format
                 skuPartNumber: "TEST_LICENSE_2"
                 prepaidUnits:
                   enabled: 10
                 consumedUnits: 7
+                
     - name: Display license availability
       debug:
         msg: "Available Licenses: {{ azure_license_response.json }}"
-    
-    - name: Process each request and update ServiceNow
+
+    - name: Process License Approval
+      block:
+        - name: Check License Availability
+          set_fact:
+            approval_status_map: >-
+              {%- set status_map = {} -%}
+              {%- for request_number, license_type in requested_license_map.items() -%}
+                {%- set clean_license_type = license_type | lower | regex_replace(' requested', '') -%}
+                {%- set found = false -%}
+                {%- for license in azure_license_response.json.value -%}
+                  {%- if license.skuPartNumber | lower == clean_license_type -%}
+                    {%- set _ = status_map.update({request_number: 'approved'}) -%}
+                    {%- set found = true -%}
+                  {%- endif -%}
+                {%- endfor -%}
+                {%- if not found -%}
+                  {%- set _ = status_map.update({request_number: 'rejected'}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ status_map }}
+
+        - name: Update Approval Status in ServiceNow
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.sys_id }}"
+            method: PATCH
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            headers:
+              Content-Type: "application/json"
+            body_format: json
+            body:
+              approval: "{{ approval_status_map[item.number] }}"
+            return_content: yes
+          loop: "{{ servicenow_response.json.result }}"
+          when: 
+            - approval_status_map is not none
+            - item.number in approval_status_map
+          register: approval_updates
+
+        - name: Display Approval Results
+          debug:
+            msg: 
+              - "Approval Status Updated: {{ approval_status_map }}"
+
+    - name: Create user list for approved requests
       set_fact:
-        license_available: false
-      loop: "{{ servicenow_response.json.result }}"
-      loop_control:
-        loop_var: request
-      
-    - name: Check license availability
-      set_fact:
-        license_available: "{{ (azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', request.short_description) | map(attribute='prepaidUnits.enabled') | first | int) > (azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', request.short_description) | map(attribute='consumedUnits') | first | int) }}"
-      loop: "{{ servicenow_response.json.result }}"
-      loop_control:
-        loop_var: request
-      
-    - name: Update request status in ServiceNow
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ request.sys_id }}"
-        method: PATCH
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        body:
-          state: "{{ 'Approved' if license_available else 'Rejected' }}"
-          comments: "License {{ 'approved' if license_available else 'not available, request rejected' }}"
-        body_format: json
-        return_content: yes
-      register: update_response
-      loop: "{{ servicenow_response.json.result }}"
-      loop_control:
-        loop_var: request
-      
-    - name: Display update response
-      debug:
-        msg: "Request {{ request.number }} has been {{ 'approved' if license_available else 'rejected' }}."
-      loop: "{{ servicenow_response.json.result }}"
-      loop_control:
-        loop_var: request
+        approved_users: >-
+          {%- set users = [] -%}
+          {%- for request in servicenow_response.json.result -%}
+            {%- if request.number in approval_status_map and approval_status_map[request.number] == 'approved' -%}
+              {%- set user_info = {
+                'request_id': request.sys_id,
+                'request_number': request.number,
+                'user_email': request.requested_for.email | default(''),
+                'user_name': request.requested_for.name | default(''),
+                'license_type': request.short_description | regex_replace(' requested', '')
+              } -%}
+              {%- set _ = users.append(user_info) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ users }}
+      when: approval_status_map is defined
+
+    - name: License Assignment Process
+      block:
+        # Add a task to check if the user exists first
+        - name: Check if user exists
+          uri:
+            url: "{{ graph_api_endpoint }}/users/LA1@amitomar63gmail.onmicrosoft.com"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 404]
+            return_content: yes
+          register: user_check
+          ignore_errors: yes
+        
+        # Now the user creation code can use the user_check variable
+        - name: Create User if Not Exists
+          uri:
+            url: "{{ graph_api_endpoint }}/users"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body:
+              accountEnabled: true
+              displayName: "LicenseAutomation"
+              mailNickname: "LA1"
+              userPrincipalName: "LA1@amitomar63gmail.onmicrosoft.com"
+              passwordProfile:
+                forceChangePasswordNextSignIn: true
+                password: "HELLO@123"
+            body_format: json
+            status_code: [201]
+          register: user_creation
+          when: user_check.status == 404 or user_check is failed
+
+        - name: Debug - Show User Creation Status
+          debug:
+            msg: "User Creation: {{ 'Successful' if user_creation.status == 201 else 'Unsuccessful or already exists' }}"
+          when: user_check.status == 404 or user_check is failed
+        
+        # Get user ID for license assignment
+        - name: Get User ID
+          set_fact:
+            user_id: "{{ user_creation.json.id | default('') }}"
+          when: user_creation.status is defined and user_creation.status == 201
+        
+        - name: Get User ID for existing user
+          set_fact:
+            user_id: "{{ user_check.json.id | default('') }}"
+          when: user_check.status is defined and user_check.status == 200
+        
+        # Create a simplified license assignment list
+        - name: Create license assignment list
+          set_fact:
+            license_assignments: >-
+              {%- set assignments = [] -%}
+              {%- for license in azure_license_response.json.value -%}
+                {%- set assignment = {
+                  'user_id': user_id,
+                  'license_id': license.id,
+                  'license_type': license.skuPartNumber
+                } -%}
+                {%- set _ = assignments.append(assignment) -%}
+              {%- endfor -%}
+              {{ assignments }}
+          when: user_id is defined
+
+        # Assign licenses to the user
+        - name: Assign licenses to user
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ user_id }}/assignLicense"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body_format: json
+            body:
+              addLicenses:
+                - skuId: "{{ item.license_id }}"
+              removeLicenses: []
+            status_code: [200, 201]
+            return_content: yes
+          register: license_assignment_result
+          loop: "{{ license_assignments }}"
+          when: user_id is defined and license_assignments is defined
+          ignore_errors: yes
+
+        # Display license assignment results
+        - name: Generate license assignment report
+          debug:
+            msg: |
+              License Assignment Summary:
+              --------------------------------------
+              User ID: {{ user_id | default('None') }}
+              User Created: {{ user_creation.status == 201 | default(false) }}
+              Licenses Assigned: {{ license_assignment_result.results | selectattr('status', 'in', [200, 201]) | list | length | default(0) }}
+              
+              Details:
+              {% for assignment in license_assignments | default([]) %}
+              - License ID: {{ assignment.license_id }}, Type: {{ assignment.license_type }}
+              {% endfor %}
+          when: license_assignments is defined
