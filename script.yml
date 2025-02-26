@@ -180,12 +180,12 @@
               Content-Type: "application/json"
             body:
               accountEnabled: true
-              displayName: "LicenseAutomation"
-              mailNickname: "LA1"
-              userPrincipalName: "LA1@amitomar63gmail.onmicrosoft.com"
+              displayName: "LicenseAutomation1"
+              mailNickname: "LA2"
+              userPrincipalName: "LA2@amitomar63gmail.onmicrosoft.com"
               passwordProfile:
                 forceChangePasswordNextSignIn: true
-                password: "HELLO@123"
+                password: "HELLOBye@123"
             body_format: json
             status_code: [201]
           register: user_creation
