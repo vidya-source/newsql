@@ -179,7 +179,7 @@
               Content-Type: "application/json"
             body:
               accountEnabled: true
-              displayName: "LicenseAutomation
+              displayName: "LicenseAutomation"
               mailNickname: "LA1"
               userPrincipalName: "LA1@amitomar63gmail.onmicrosoft.com"
               passwordProfile:
