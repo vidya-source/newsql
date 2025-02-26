@@ -1,104 +1,362 @@
 ---
-- name: Check MySQL Server Health
+- name: Fetch Pending ServiceNow Requests
   hosts: localhost
   gather_facts: no
   vars:
-    mysql_host: "localhost"
-    mysql_user: "root"
-    mysql_password: "Vidya7747@Bindu"
-    mysql_port: "3306"
+    servicenow_instance: "https://dev247928.service-now.com"
+    servicenow_username: "admin"
+    servicenow_password: "%ml4Vs9RXE/s"
+    servicenow_table: "sc_request"
+    tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
+    client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
+    client_secret: "{{client_secret}}"
+    graph_api_endpoint: "https://graph.microsoft.com/v1.0"
+    approver_group: "license_approvers"
+    mail_sender: "notifications@example.com"
+    
   tasks:
-    - name: Get Database Space Utilization
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          table_schema AS DatabaseName,
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
-        FROM information_schema.tables 
-        GROUP BY table_schema;"
-      register: db_space
-      ignore_errors: yes
-    - name: Get Database Health
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          schema_name AS DatabaseName,
-          'ONLINE' AS Status,
-          (SELECT COUNT(*) FROM information_schema.processlist WHERE command != 'Sleep') AS ActiveRequests,
-          (SELECT COUNT(*) FROM information_schema.processlist) AS ActiveUserConnections,
-          (SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'Waiting for table metadata lock') AS PendingRequests,
-          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS CPUQueueLength
-        FROM information_schema.schemata;"
-      register: db_health
-      ignore_errors: yes
-    - name: Check for Deadlocks
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT COUNT(*) AS Deadlocks 
-        FROM information_schema.innodb_trx t1 
-        INNER JOIN information_schema.innodb_trx t2 
-        WHERE t1.trx_id != t2.trx_id 
-        AND t1.trx_waiting_lock_id = t2.trx_lock_id 
-        AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
-      register: deadlocks
-      ignore_errors: yes
-    - name: Get MySQL Events Status
-      shell: |
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          event_name,
-          status,
-          last_executed,
-          CASE 
-            WHEN execute_at IS NOT NULL THEN 'SCHEDULED'
-            WHEN on_completion = 'PRESERVE' THEN 'RECURRING'
-            ELSE 'ONE-TIME'
-          END as event_type
-        FROM information_schema.events;"
-      register: event_activities
-      ignore_errors: yes
-    - name: Process MySQL Output
-      set_fact:
-        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
-        db_health_fact: "{{ db_health.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveRequests', 
-                          'ActiveUserConnections', 'PendingRequests', 'CPUQueueLength']) | list }}"
-        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | trim | int } }}"
-        event_activities_fact: "{{ event_activities.stdout_lines | map('split', '\t') | 
-                                 map('list') | map('dict', ['event_name', 'status', 
-                                 'last_executed', 'event_type']) | list }}"
-    - name: Display Formatted Results
+    - name: Fetch pending requests from ServiceNow
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=state=requested"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: servicenow_response
+    
+    - name: Display request details
       debug:
         msg: |
-          📊 Database Space Utilization:
-          {% for item in db_space_fact %}
-           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% for request in servicenow_response.json.result %}
+          Request Number: {{ request.get('number', 'N/A') }}
+          User ID (Requested For): {{ request.get('requested_for', {}).get('value', 'Unknown') }}
+          User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
+          Requested License Type: {{ request.get('short_description', 'Not Provided') }}
+          Description: {{ request.get('description', 'Not Provided') }}
+          ------------------------------------------------
           {% endfor %}
-          🚨 Deadlocks:
-          {% if deadlocks_fact.Deadlocks > 0 %}
-           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
-          {% else %}
-           - No deadlocks detected
-          {% endif %}
-          [ℹ️] Events query returned {{ event_activities_fact | length }} rows.
-          🛠 MySQL Events Status:
-          {% for event in event_activities_fact %}
-           - Event: {{ event.event_name }}
-             Status: {{ event.status }}
-             Last Executed: {{ event.last_executed }}
-             Type: {{ event.event_type }}
-          {% endfor %}
-          🩺 Database Health Check:
-          {% if db_health_fact | length > 0 %}
-            {% for item in db_health_fact %}
-               - Database: {{ item.DatabaseName }}
-                 - Status: {{ item.Status }}
-                 - Active Requests: {{ item.ActiveRequests }}
-                 - Active User Connections: {{ item.ActiveUserConnections }}
-                 - Pending Requests: {{ item.PendingRequests }}
-                 - Running Threads: {{ item.CPUQueueLength }}
-            {% endfor %}
-          {% else %}
-            [❌] No database health data available.
-          {% endif %}
+          
+    - name: Get Azure access token
+      uri:
+        url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
+        method: POST
+        body:
+          client_id: "{{ client_id }}"
+          client_secret: "{{ client_secret }}"
+          scope: "https://graph.microsoft.com/.default"
+          grant_type: "client_credentials"
+        body_format: form-urlencoded
+        return_content: yes
+      register: azure_auth_response
+    
+    - name: Set Azure token
+      set_fact:
+        access_token: "{{ azure_auth_response.json.access_token }}"
+    
+    - name: Check License Availability in Azure
+      uri:
+        url: "{{ graph_api_endpoint }}/subscribedSkus"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        return_content: yes
+      register: azure_license_response
+    
+    - name: Add dummy license data for testing (remove this after u have real lic)
+      set_fact:
+        azure_license_response:
+          json:
+            value:
+              - id: "dummy-license-1"
+                skuPartNumber: "TEST_LICENSE_1"
+                prepaidUnits:
+                  enabled: 5
+                consumedUnits: 3
+              - id: "dummy-license-2"
+                skuPartNumber: "TEST_LICENSE_2"
+                prepaidUnits:
+                  enabled: 10
+                consumedUnits: 7  
+    
+    - name: Display license availability
+      debug:
+        msg: "Available Licenses: {{ azure_license_response.json }}"
+        
+    # 3. Approval Process
+    - name: Check for requests pending approval
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=approval=requested"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: pending_approvals
+    
+    - name: Get approvals from approver group
+      block:
+        - name: Simulate approval decisions (in production, this would come from actual approvers)
+          set_fact:
+            approval_decisions: >-
+              {% set decisions = [] %}
+              {% for request in pending_approvals.json.result %}
+              {% set decision = {'sys_id': request.sys_id, 'approval': ['approved', 'rejected'] | random } %}
+              {% set decisions = decisions + [decision] %}
+              {% endfor %}
+              {{ decisions }}
+          when: pending_approvals.json.result | length > 0
+        
+        - name: Update ServiceNow with approval decisions
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.sys_id }}"
+            method: PATCH
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            body_format: json
+            body:
+              approval: "{{ item.approval }}"
+              state: "{% if item.approval == 'approved' %}approved{% else %}rejected{% endif %}"
+            status_code: 200
+          loop: "{{ approval_decisions }}"
+          when: approval_decisions is defined
+      when: pending_approvals.json.result | length > 0
+
+    # 4. License Assignment
+    - name: Process approved requests
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=approval=approved^state=approved"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: approved_requests
+      
+    - name: Get user details for approved requests
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sys_user/{{ item.requested_for.value }}"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: user_details
+      loop: "{{ approved_requests.json.result }}"
+      loop_control:
+        label: "Getting user {{ item.requested_for.value }}"
+      when: approved_requests.json.result | length > 0
+
+    - name: Create Azure accounts if needed and assign licenses
+      block:
+        - name: Check if user exists in Azure
+          uri:
+            url: "{{ graph_api_endpoint }}/users?$filter=userPrincipalName eq '{{ item.json.result.email }}'"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            return_content: yes
+          register: user_azure_check
+          loop: "{{ user_details.results }}"
+          loop_control:
+            label: "Checking Azure for {{ item.json.result.email }}"
+          when: user_details.results is defined
+
+        - name: Create user in Azure if not exists
+          uri:
+            url: "{{ graph_api_endpoint }}/users"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body_format: json
+            body:
+              accountEnabled: true
+              displayName: "{{ item.item.json.result.name }}"
+              mailNickname: "{{ item.item.json.result.user_name }}"
+              userPrincipalName: "{{ item.item.json.result.email }}"
+              passwordProfile:
+                forceChangePasswordNextSignIn: true
+                password: "TemporaryP@ss{{ 1000 | random }}"
+            status_code: [201, 409]
+            return_content: yes
+          register: user_creation
+          loop: "{{ user_azure_check.results }}"
+          loop_control:
+            label: "Creating user {{ item.item.json.result.email }}"
+          when: 
+            - user_azure_check.results is defined
+            - item.json.value | length == 0
+
+        - name: Parse license request from description
+          set_fact:
+            requested_license_type: "{{ item.0.short_description | regex_search('(?:License|Subscription): ([\\w\\s]+)', '\\1') | first }}"
+          register: license_requests
+          loop: "{{ approved_requests.json.result | zip(user_details.results) | list }}"
+          loop_control:
+            label: "Parsing license for {{ item.1.json.result.email }}"
+          when: approved_requests.json.result | length > 0
+
+        - name: Assign license to user
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ item.1.json.result.email }}/assignLicense"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body_format: json
+            body:
+              addLicenses:
+                - skuId: "{{ azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', item.requested_license_type | default('TEST_LICENSE_1')) | map(attribute='id') | first }}"
+              removeLicenses: []
+            status_code: [200, 201]
+            return_content: yes
+          register: license_assignment
+          loop: "{{ approved_requests.json.result | zip(user_details.results) | list }}"
+          loop_control:
+            label: "Assigning license to {{ item.1.json.result.email }}"
+          when: approved_requests.json.result | length > 0
+
+        - name: Update license database (simulated)
+          debug:
+            msg: "License database updated for user {{ item.1.json.result.email }} with license {{ item.requested_license_type | default('TEST_LICENSE_1') }}"
+          loop: "{{ approved_requests.json.result | zip(user_details.results) | list }}"
+          when: approved_requests.json.result | length > 0
+      when: approved_requests.json.result | length > 0
+
+    # 5. User Notifications
+    - name: Send notification to users with approved requests
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sys_email"
+        method: POST
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        body_format: json
+        body:
+          type: "send"
+          subject: "Your License Request Has Been Approved"
+          body: |
+            Dear {{ item.1.json.result.name }},
+            
+            Your license request ({{ item.0.number }}) has been approved and provisioned.
+            
+            License Type: {{ item.0.short_description }}
+            
+            You can now access your licensed application. If you have any questions, please contact the IT Help Desk.
+            
+            Thank you,
+            IT Department
+          from: "{{ mail_sender }}"
+          to: "{{ item.1.json.result.email }}"
+        status_code: [200, 201]
+      loop: "{{ approved_requests.json.result | zip(user_details.results) | list }}"
+      loop_control:
+        label: "Sending notification to {{ item.1.json.result.email }}"
+      register: notification_sent
+      when: approved_requests.json.result | length > 0
+
+    - name: Send notification to users with rejected requests
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=approval=rejected"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: rejected_requests
+      
+    - name: Get user details for rejected requests
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sys_user/{{ item.requested_for.value }}"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: rejected_user_details
+      loop: "{{ rejected_requests.json.result }}"
+      loop_control:
+        label: "Getting user {{ item.requested_for.value }}"
+      when: rejected_requests.json.result | length > 0
+    
+    - name: Send rejection notifications
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sys_email"
+        method: POST
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        body_format: json
+        body:
+          type: "send"
+          subject: "Your License Request Was Not Approved"
+          body: |
+            Dear {{ item.1.json.result.name }},
+            
+            Your license request ({{ item.0.number }}) has not been approved at this time.
+            
+            License Type: {{ item.0.short_description }}
+            
+            For more information, please contact your manager or the IT Help Desk.
+            
+            Thank you,
+            IT Department
+          from: "{{ mail_sender }}"
+          to: "{{ item.1.json.result.email }}"
+        status_code: [200, 201]
+      loop: "{{ rejected_requests.json.result | zip(rejected_user_details.results) | list }}"
+      loop_control:
+        label: "Sending rejection to {{ item.1.json.result.email }}"
+      when: rejected_requests.json.result | length > 0
+    
+    # 6. Request Closure
+    - name: Mark approved and completed requests as resolved
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.0.sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        body_format: json
+        body:
+          state: "closed_complete"
+          close_notes: "License assigned successfully to {{ item.1.json.result.email }} for {{ item.0.short_description }}. User has been notified."
+        status_code: 200
+      loop: "{{ approved_requests.json.result | zip(user_details.results) | list }}"
+      loop_control:
+        label: "Closing request {{ item.0.number }}"
+      when: 
+        - approved_requests.json.result | length > 0
+        - notification_sent is succeeded
+    
+    - name: Mark rejected requests as closed
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.0.sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        body_format: json
+        body:
+          state: "closed_rejected"
+          close_notes: "License request was rejected. User has been notified."
+        status_code: 200
+      loop: "{{ rejected_requests.json.result | zip(rejected_user_details.results) | list }}"
+      loop_control:
+        label: "Closing rejected request {{ item.0.number }}"
+      when: rejected_requests.json.result | length > 0
+    
+    - name: Generate summary report
+      debug:
+        msg: |
+          License Request Processing Summary:
+          ----------------------------------
+          Total Requests Processed: {{ (approved_requests.json.result | length) + (rejected_requests.json.result | length) }}
+          Approved and Assigned: {{ approved_requests.json.result | length }}
+          Rejected: {{ rejected_requests.json.result | length }}
+          
+          All requests have been processed and closed in ServiceNow.
