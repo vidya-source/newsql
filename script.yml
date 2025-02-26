@@ -70,17 +70,18 @@
         return_content: yes
       register: azure_license_response
       
+    # For testing purposes - use real license data when available
     - name: Add dummy license data for testing (remove this after u have real lic)
       set_fact:
         azure_license_response:
           json:
             value:
-              - id: "c7df2760-2c81-4ef7-b578-5b5392b571df"  # Using proper GUID format
+              - id: "c7df2760-2c81-4ef7-b578-5b5392b571df" 
                 skuPartNumber: "TEST_LICENSE_1"
                 prepaidUnits:
                   enabled: 5
                 consumedUnits: 3
-              - id: "f30db892-07e9-47e9-837c-80727f46fd3d"  # Using proper GUID format
+              - id: "f30db892-07e9-47e9-837c-80727f46fd3d"
                 skuPartNumber: "TEST_LICENSE_2"
                 prepaidUnits:
                   enabled: 10
@@ -199,12 +200,25 @@
         - name: Get User ID
           set_fact:
             user_id: "{{ user_creation.json.id | default('') }}"
-          when: user_creation.status is defined and user_creation.status == 201
+          when: user_creation is defined and user_creation.status is defined and user_creation.status == 201
         
         - name: Get User ID for existing user
           set_fact:
             user_id: "{{ user_check.json.id | default('') }}"
           when: user_check.status is defined and user_check.status == 200
+        
+        # Get real licenses from Azure instead of dummy data
+        # This task is commented out as you're using dummy data for testing
+        # Uncomment this once you want to use real licenses
+        # - name: Fetch real licenses from Azure
+        #   uri:
+        #     url: "{{ graph_api_endpoint }}/subscribedSkus"
+        #     method: GET
+        #     headers:
+        #       Authorization: "Bearer {{ access_token }}"
+        #       Content-Type: "application/json"
+        #     return_content: yes
+        #   register: real_licenses
         
         # Create a simplified license assignment list
         - name: Create license assignment list
@@ -222,25 +236,14 @@
               {{ assignments }}
           when: user_id is defined
 
-        # Assign licenses to the user
-        - name: Assign licenses to user
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ user_id }}/assignLicense"
-            method: POST
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              addLicenses:
-                - skuId: "{{ item.license_id }}"
-              removeLicenses: []
-            status_code: [200, 201]
-            return_content: yes
-          register: license_assignment_result
-          loop: "{{ license_assignments }}"
+        # Skip actual license assignment in testing mode
+        # This is because dummy licenses don't exist in your Azure tenant
+        - name: Skip license assignment in testing mode
+          debug:
+            msg: "TESTING MODE: Would assign license {{ item.license_type }} ({{ item.license_id }}) to user {{ item.user_id }}"
+          loop: "{{ license_assignments | default([]) }}"
           when: user_id is defined and license_assignments is defined
-          ignore_errors: yes
+          register: license_assignment_simulation
 
         # Display license assignment results
         - name: Generate license assignment report
@@ -249,11 +252,12 @@
               License Assignment Summary:
               --------------------------------------
               User ID: {{ user_id | default('None') }}
-              User Created: {{ user_creation.status == 201 | default(false) }}
-              Licenses Assigned: {{ license_assignment_result.results | selectattr('status', 'in', [200, 201]) | list | length | default(0) }}
               
-              Details:
+              Licenses that would be assigned in production:
               {% for assignment in license_assignments | default([]) %}
               - License ID: {{ assignment.license_id }}, Type: {{ assignment.license_type }}
               {% endfor %}
+              
+              NOTE: License assignment was simulated because dummy license IDs were used.
+              In production, please use real license SKUs from your Azure tenant.
           when: license_assignments is defined
