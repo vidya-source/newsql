@@ -11,8 +11,6 @@
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
     client_secret: "{{client_secret}}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    approval_table: "sc_request_approval"
-    license_assignment_table: "license_assignment"
   
   tasks:
     - name: Fetch pending requests from ServiceNow
@@ -78,50 +76,12 @@
                   enabled: 10
                 consumedUnits: 7  
     
-    - name: Fetch approvals from ServiceNow
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/{{ approval_table }}?sysparm_query=state=in_progress"
-        method: GET
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        return_content: yes
-      register: approval_response
-    
-    - name: Process approvals
+    - name: Process Approvals (Simulated)
       debug:
         msg: |
-          {% for approval in approval_response.json.result %}
-          Approval ID: {{ approval.get('sys_id', 'N/A') }}
-          Request Number: {{ approval.get('request', 'N/A') }}
-          Approval Status: {{ approval.get('state', 'Pending') }}
-          ------------------------------------------------
-          {% endfor %}
+          Simulating approval process: All requests are auto-approved for testing.
     
     - name: Assign License if Approved
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/{{ license_assignment_table }}"
-        method: POST
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        body:
-          request_number: "{{ item.request }}"
-          assigned_license: "{{ item.short_description }}"
-          status: "Assigned"
-        body_format: json
-        return_content: yes
-      with_items: "{{ approval_response.json.result | selectattr('state', 'equalto', 'approved') | list }}"
-      register: license_assignment_response
-    
-    - name: Update ServiceNow request status to complete
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.request }}"
-        method: PATCH
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        body:
-          state: "Completed"
-        body_format: json
-      with_items: "{{ approval_response.json.result | selectattr('state', 'equalto', 'approved') | list }}"
+      debug:
+        msg: |
+          Assigning license for approved requests (simulated process).
