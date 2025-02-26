@@ -1,5 +1,5 @@
 ---
-- name: Fetch Pending ServiceNow Requests and Process Approvals
+- name: Manage ServiceNow License Requests
   hosts: localhost
   gather_facts: no
   vars:
@@ -11,6 +11,7 @@
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
     client_secret: "{{client_secret}}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
+    approval_group: "Approver_Group"
   
   tasks:
     - name: Fetch pending requests from ServiceNow
@@ -23,16 +24,6 @@
         return_content: yes
       register: servicenow_response
 
-    - name: Display request details
-      debug:
-        msg: |
-          {% for request in servicenow_response.json.result %}
-          Request Number: {{ request.get('number', 'N/A') }}
-          Requested License Type: {{ request.get('short_description', 'Not Provided') }}
-          Status: {{ request.get('approval', 'Pending') }}
-          ------------------------------------------------
-          {% endfor %}
-      
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -59,33 +50,54 @@
           Content-Type: "application/json"
         return_content: yes
       register: azure_license_response
-    
-    - name: Add dummy license data for testing (remove this after you have real licenses)
-      set_fact:
-        azure_license_response:
-          json:
-            value:
-              - id: "dummy-license-1"
-                skuPartNumber: "TEST_LICENSE_1"
-                prepaidUnits:
-                  enabled: 5
-                consumedUnits: 3
-              - id: "dummy-license-2"
-                skuPartNumber: "TEST_LICENSE_2"
-                prepaidUnits:
-                  enabled: 10
-                consumedUnits: 7  
-    
-    - name: Prompt for Individual Approval
-      pause:
-        prompt: "Approve request {{ item.number }} ({{ item.short_description }})? (yes/no)"
-      register: user_approvals
-      loop: "{{ servicenow_response.json.result }}"
 
-    - name: Assign License if Approved
-      debug:
-        msg: "Assigning license for request {{ item.number }}"
-      when: user_approvals.results[item.index].user_input | lower == 'yes'
+    - name: Process each request
       loop: "{{ servicenow_response.json.result }}"
       loop_control:
-        index_var: index
+        loop_var: request
+      tasks:
+        - name: Check if request is approved
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ request.sys_id }}"
+            method: GET
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            return_content: yes
+          register: request_status
+
+        - name: Approve or Deny Request
+          set_fact:
+            approved: "{{ request_status.json.result.approval == 'approved' }}"
+
+        - name: Assign License if Approved
+          when: approved
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ request.requested_for }}/assignLicense"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body:
+              addLicenses:
+                - skuId: "dummy-license-1"
+              removeLicenses: []
+            body_format: json
+            return_content: yes
+          register: license_assignment_response
+
+        - name: Update ServiceNow Request Status
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ request.sys_id }}"
+            method: PATCH
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            body:
+              state: "{{ 'Resolved' if approved else 'Closed Incomplete' }}"
+            body_format: json
+            return_content: yes
+
+        - name: Notify User
+          debug:
+            msg: "User {{ request.requested_for }} has been notified: License {{ 'Assigned' if approved else 'Denied' }}"
