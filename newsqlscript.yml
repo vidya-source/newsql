@@ -80,22 +80,10 @@
       debug:
         msg: "Available Licenses: {{ azure_license_response.json }}"
 
-    # Manual Approval Process
-    - name: Prompt for approval
-      pause:
-        prompt: |
-          Request Number: {{ item.number }}
-          Requested License Type: {{ item.short_description }}
-          Description: {{ item.description }}
-          
-          Approve this request? (yes/no)
-      register: approval_result
-      with_items: "{{ servicenow_response.json.result }}"
-      when: servicenow_response.json.result | length > 0
-
-    - name: Filter approved requests
+    # Auto-Approval Process
+    - name: Approve all requests automatically
       set_fact:
-        approved_requests: "{{ servicenow_response.json.result | zip(approval_result.results) | selectattr('1.user_input', 'equalto', 'yes') | map(attribute='0') | list }}"
+        approved_requests: "{{ servicenow_response.json.result }}"
 
     - name: Update ServiceNow Request with Approval Status
       uri:
@@ -132,11 +120,6 @@
         msg: "Notification sent to user for request {{ item.number }} - Approved and Assigned"
       with_items: "{{ assigned_requests }}"
 
-    - name: Notify Users of Denied Requests
-      debug:
-        msg: "Notification sent to user for request {{ item.number }} - Denied"
-      with_items: "{{ servicenow_response.json.result | difference(approved_requests) }}"
-
     # Request Closure
     - name: Close Approved Requests in ServiceNow
       uri:
@@ -155,3 +138,17 @@
       debug:
         msg: "ServiceNow request {{ item.number }} is now resolved."
       with_items: "{{ assigned_requests }}"
+
+    # Generate JSON Output for Approvals
+    - name: Save Approval Data as JSON
+      copy:
+        content: "{{ approval_summary | to_nice_json }}"
+        dest: "./approval_results.json"
+      vars:
+        approval_summary:
+          approved_requests: "{{ approved_requests | map(attribute='number') | list }}"
+          denied_requests: []
+          client_id: "{{ client_id }}"
+          client_secret: "{{ client_secret }}"
+          tenant_id: "{{ tenant_id }}"
+          graph_api_endpoint: "{{ graph_api_endpoint }}"
