@@ -32,8 +32,8 @@
     - name: Extract email, display name, and mail nickname from request item
       set_fact:
         user_email: "{{ ritm_response.json.result[0].email | default('N/A') }}"
-        display_name: "{{ ritm_response.json.result[0].display_name | default('N/A') }}"
-        mail_nickname: "{{ ritm_response.json.result[0].mail_nickname | default('N/A') }}"
+        display_name: "{{ ritm_response.json.result[0].displayName | default('N/A') }}"
+        mail_nickname: "{{ ritm_response.json.result[0].mailNickname | default('N/A') }}"
 
     - name: Fetch pending requests from ServiceNow
       uri:
