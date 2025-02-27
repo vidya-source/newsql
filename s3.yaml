@@ -1,1 +1,303 @@
+---
+- name: Process ServiceNow Requests and Create Azure Users
+  hosts: localhost
+  gather_facts: no
+  vars:
+    servicenow_instance: "https://dev247928.service-now.com"
+    servicenow_username: "admin"
+    servicenow_password: "%ml4Vs9RXE/s"
+    tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
+    client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
+    client_secret: "{{client_secret}}"
+    graph_api_endpoint: "https://graph.microsoft.com/v1.0"
+    
+  tasks:
+    # Step 1: Fetch pending requests from ServiceNow
+    - name: Fetch pending requests from ServiceNow
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_request?sysparm_query=request_state=requested"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: servicenow_response
 
+    - name: Display request details
+      debug:
+        msg: |
+          {% for request in servicenow_response.json.result %}
+          Request Number: {{ request.get('number', 'N/A') }}
+          Sys ID: {{ request.get('sys_id', 'N/A') }}
+          User ID (Requested For): {{ request.get('requested_for', {}).get('value', 'Unknown') }}
+          User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
+          Requested License Type: {{ request.get('short_description', 'Not Provided') }}
+          Description: {{ request.get('description', 'Not Provided') }}
+          ------------------------------------------------
+          {% endfor %}
+
+    # Step 2: For each request, fetch the catalog item details including variables
+    - name: Fetch Request Item (RITM) details for each request
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_req_item?sysparm_query=request={{ item.sys_id }}"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: ritm_responses
+      loop: "{{ servicenow_response.json.result }}"
+      loop_control:
+        label: "{{ item.number }}"
+
+    # Initialize collected request data
+    - name: Initialize collected request data
+      set_fact:
+        collected_request_data: []
+
+    # Step 3: For each RITM, fetch catalog item variables
+    - name: Process each RITM to fetch catalog variables
+      block:
+        - name: Fetch catalog item variables for RITM
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/sc_item_option_mtom?sysparm_query=request_item={{ ritm_record.sys_id }}"
+            method: GET
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            return_content: yes
+          register: variables_response
+
+        - name: Fetch variable details for each option
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/sc_item_option/{{ item.sc_item_option.value }}"
+            method: GET
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            return_content: yes
+          register: option_value_details
+          loop: "{{ variables_response.json.result }}"
+          loop_control:
+            label: "{{ item.sc_item_option.value | default('N/A') }}"
+
+        - name: Extract variable values and IDs
+          set_fact:
+            variable_values: "{{ variable_values | default([]) + [{'value': item.json.result.value, 'item_option_id': item.json.result.item_option_new.value}] }}"
+          loop: "{{ option_value_details.results }}"
+
+        - name: Fetch variable names for each option
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/item_option_new/{{ item.item_option_id }}"
+            method: GET
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            return_content: yes
+          register: option_name_details
+          loop: "{{ variable_values }}"
+          loop_control:
+            label: "{{ item.item_option_id | default('N/A') }}"
+
+        - name: Create catalog variables dictionary
+          set_fact:
+            current_catalog_variables: "{{ current_catalog_variables | default({}) | combine({item.0.json.result.question_text: item.1.value}) }}"
+          loop: "{{ option_name_details.results | zip(variable_values) | list }}"
+
+        - name: Get requested_for user details
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/sys_user/{{ ritm_record.requested_for.value }}"
+            method: GET
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            return_content: yes
+          register: user_details
+          when: ritm_record.requested_for.value is defined
+
+        - name: Add user details to catalog variables if not already present
+          set_fact:
+            current_catalog_variables: >-
+              {{ current_catalog_variables | default({}) | combine({
+                'DisplayName': current_catalog_variables.DisplayName | default(user_details.json.result.name),
+                'mailNickname': current_catalog_variables.mailNickname | default(user_details.json.result.name | regex_replace('[^a-zA-Z0-9]', '') | lower),
+                'userPrincipalName': current_catalog_variables.userPrincipalName | default((user_details.json.result.name | regex_replace('[^a-zA-Z0-9]', '') | lower) ~ "@amitomar63gmail.onmicrosoft.com"),
+                'email': current_catalog_variables.email | default(user_details.json.result.email)
+              }) }}
+          when: user_details is defined and user_details.json is defined and user_details.json.result is defined
+
+        - name: Collect request data for processing
+          set_fact:
+            collected_request_data: "{{ collected_request_data | default([]) + [{
+              'request_id': request_id,
+              'ritm_sys_id': ritm_record.sys_id,
+              'catalog_variables': current_catalog_variables,
+              'request_number': ritm_record.number
+            }] }}"
+
+        - name: Reset current catalog variables for next iteration
+          set_fact:
+            current_catalog_variables: {}
+            variable_values: []
+      loop: "{{ ritm_responses.results }}"
+      loop_control:
+        loop_var: ritm_response_item
+      vars:
+        ritm_record: "{{ ritm_response_item.json.result[0] }}"
+        request_id: "{{ ritm_response_item.json.result[0].request.value }}"
+      when: ritm_response_item.json.result | length > 0
+
+    # Step 4: Get Azure access token
+    - name: Get Azure access token
+      uri:
+        url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
+        method: POST
+        body:
+          client_id: "{{ client_id }}"
+          client_secret: "{{ client_secret }}"
+          scope: "https://graph.microsoft.com/.default"
+          grant_type: "client_credentials"
+        body_format: form-urlencoded
+        return_content: yes
+      register: azure_auth_response
+
+    - name: Set Azure token
+      set_fact:
+        access_token: "{{ azure_auth_response.json.access_token }}"
+
+    # Step 5: Check License Availability in Azure
+    - name: Check License Availability in Azure
+      uri:
+        url: "{{ graph_api_endpoint }}/subscribedSkus"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        return_content: yes
+      register: azure_license_response
+
+    # Add dummy license data for testing if needed
+    - name: Add dummy license data for testing (remove this in production)
+      set_fact:
+        azure_license_response:
+          json:
+            value:
+              - id: "dummy-license-1"
+                skuPartNumber: "TEST_LICENSE_1"
+                prepaidUnits:
+                  enabled: 5
+                consumedUnits: 3
+              - id: "dummy-license-2"
+                skuPartNumber: "TEST_LICENSE_2"
+                prepaidUnits:
+                  enabled: 10
+                consumedUnits: 10
+
+    # Step 6: Process each RITM to create Azure users
+    - name: Process each RITM to create Azure users
+      block:
+        - name: Check if license is available
+          set_fact:
+            license_available: true
+            # In production, implement real license check based on the azure_license_response
+
+        - name: Check if user exists in Azure AD
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ catalog_variables.userPrincipalName }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 404]
+            return_content: yes
+          register: user_check
+          ignore_errors: yes
+
+        - name: Create User in Azure AD if Not Exists and license is available
+          uri:
+            url: "{{ graph_api_endpoint }}/users"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body:
+              accountEnabled: true
+              displayName: "{{ catalog_variables.DisplayName }}"
+              mailNickname: "{{ catalog_variables.mailNickname }}"
+              userPrincipalName: "{{ catalog_variables.userPrincipalName }}"
+              passwordProfile:
+                forceChangePasswordNextSignIn: true
+                password: "{{ catalog_variables.Password | default('Default@1234') }}"
+            body_format: json
+            status_code: [201]
+            return_content: yes
+          register: user_creation
+          when: 
+            - license_available
+            - (user_check.status is defined and user_check.status == 404) or (user_check is failed)
+
+        - name: Set user creation success flag
+          set_fact:
+            user_creation_success: "{{ user_creation is defined and user_creation.status is defined and user_creation.status == 201 }}"
+
+        - name: Assign license to user if needed
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ user_creation.json.id }}/assignLicense"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            body:
+              addLicenses:
+                - skuId: "{{ azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', 'TEST_LICENSE_1') | map(attribute='id') | first }}"
+              removeLicenses: []
+            body_format: json
+            return_content: yes
+          register: license_assignment
+          when: 
+            - user_creation_success
+            - azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', 'TEST_LICENSE_1') | list | length > 0
+
+        - name: Update RITM status in ServiceNow
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/sc_req_item/{{ ritm_sys_id }}"
+            method: PATCH
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            body:
+              state: "{{ '3' if user_creation_success else '4' }}"  # 3 = Closed Complete, 4 = Closed Incomplete
+              work_notes: "{{ 'User created in Azure AD: ' + catalog_variables.userPrincipalName if user_creation_success else 'Failed to create Azure AD user due to: ' + (user_creation.msg | default('License unavailable or user exists')) }}"
+            body_format: json
+            status_code: 200
+          register: ritm_update
+
+        - name: Update Request status in ServiceNow
+          uri:
+            url: "{{ servicenow_instance }}/api/now/table/sc_request/{{ request_sys_id }}"
+            method: PATCH
+            user: "{{ servicenow_username }}"
+            password: "{{ servicenow_password }}"
+            force_basic_auth: yes
+            body:
+              request_state: "{{ 'closed_complete' if user_creation_success else 'closed_incomplete' }}"
+              comments: "{{ 'Azure user ' + catalog_variables.userPrincipalName + ' has been created successfully.' if user_creation_success else 'Failed to create Azure AD user.' }}"
+            body_format: json
+            status_code: 200
+          register: request_update
+
+        - name: Display results
+          debug:
+            msg: 
+              - "Request: {{ request_number }}"
+              - "User: {{ catalog_variables.DisplayName }}"
+              - "Status: {{ 'Success' if user_creation_success else 'Failed' }}"
+              - "Details: {{ user_creation.json | default(user_creation.msg) | default('N/A') }}"
+      vars:
+        request_sys_id: "{{ item.request_id }}"
+        ritm_sys_id: "{{ item.ritm_sys_id }}"
+        catalog_variables: "{{ item.catalog_variables }}"
+        request_number: "{{ item.request_number }}"
+      loop: "{{ collected_request_data | default([]) }}"
+      loop_control:
+        label: "{{ item.request_number }}"
