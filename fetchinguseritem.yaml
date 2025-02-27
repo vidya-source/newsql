@@ -9,9 +9,9 @@
     servicenow_table: "sc_request"
     tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
-    client_secret: "{{client_secret}}
+    client_secret: "{{client_secret}}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    request_id: "{request_id}"  # Can be RITM number or sys_id
+    request_id: "{{request_id}}"  # Can be RITM number or sys_id
   
   tasks:
     - name: Set query parameter based on input format
@@ -29,6 +29,12 @@
         return_content: yes
       register: ritm_response
     
+    - name: Extract email, display name, and mail nickname from request item
+      set_fact:
+        user_email: "{{ ritm_response.json.result[0].email | default('N/A') }}"
+        display_name: "{{ ritm_response.json.result[0].display_name | default('N/A') }}"
+        mail_nickname: "{{ ritm_response.json.result[0].mail_nickname | default('N/A') }}"
+
     - name: Fetch pending requests from ServiceNow
       uri:
         url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=request_state=requested"
@@ -57,6 +63,9 @@
           User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
           Requested License Type: {{ request.get('short_description', 'Not Provided') }}
           Description: {{ request.get('description', 'Not Provided') }}
+          Email: {{ user_email }}
+          Display Name: {{ display_name }}
+          Mail Nickname: {{ mail_nickname }}
           ------------------------------------------------
           {% endfor %}
 
