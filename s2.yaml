@@ -145,20 +145,28 @@
           {%- set users = [] -%}
           {%- for request in servicenow_response.json.result -%}
             {%- if request.sys_id in approval_status_map and approval_status_map[request.sys_id] == 'approved' -%}
+              {%- set user_email = request.requested_for.email | default('suhas@yourdomain.com') -%}
+              {%- set user_name = request.requested_for.name | default('Suhas 123') -%}
+              {%- set mail_nickname = user_name | regex_replace('[^a-zA-Z0-9]', '') | lower -%}
+              {%- set user_principal_name = mail_nickname ~ "@amitomar63gmail.onmicrosoft.com" -%}
               {%- set user_info = {
                 'request_id': request.sys_id,
                 'request_number': request.number,
-                'user_email': request.requested_for.email | default('suhas@yourdomain.com'),
-                'user_name': request.requested_for.name | default('Suhas 123'),
+                'user_email': user_email,
+                'user_name': user_name,
                 'license_type': request.short_description | regex_replace(' requested', ''),
-                'mail_nickname': request.requested_for.name | default('defaultsuhasuser') | regex_replace('[^a-zA-Z0-9]', '') | lower,
-                'user_principal_name': request.requested_for.name | default('defaultsuhasuser') | regex_replace('[^a-zA-Z0-9]', '') | lower ~ "@amitomar63gmail.onmicrosoft.com"
+                'mail_nickname': mail_nickname,
+                'user_principal_name': user_principal_name
               } -%}
               {%- set _ = users.append(user_info) -%}
             {%- endif -%}
           {%- endfor -%}
           {{ users }}
-      when: approval_status_map is defined
+
+    - name: Debug - Show Approved Users
+      debug:
+        msg: "Approved Users List: {{ approved_users }}"
+
 
     - name: License Assignment Process
       block:
@@ -174,8 +182,13 @@
           register: user_check
           loop: "{{ approved_users }}"
           loop_control:
+            index_var: ansible_index
             label: "{{ item.user_principal_name }}"
           ignore_errors: yes
+
+        - name: Debug - Show User Check Results
+          debug:
+            var: user_check.results
 
         - name: Create User in Azure AD if Not Exists
           uri:
@@ -195,13 +208,18 @@
             body_format: json
             status_code: [201]
           register: user_creation
-          when: user_check.results[ansible_loop.index0].status == 404 or user_check.results[ansible_loop.index0] is failed
+          when: (user_check.results[ansible_index].status is defined and user_check.results[ansible_index].status == 404) or 
+                (user_check.results[ansible_index] is failed)
           loop: "{{ approved_users }}"
           loop_control:
-            index_var: ansible_loop.index0
+            index_var: ansible_index
             label: "{{ item.user_principal_name }}"
 
-        - name: Store created User IDs
+        - name: Debug - Show User Creation Results
+          debug:
+            msg: "User Creation Results: {{ user_creation.results | default([]) }}"
+
+        - name: Store Created User IDs
           set_fact:
             user_id_map: >-
               {%- set user_map = {} -%}
@@ -211,6 +229,33 @@
               {%- endfor -%}
               {{ user_map }}
 
-        - name: Debug - Show User Creation Status
+        - name: Debug - Show User ID Map
           debug:
-            msg: "User Creation Results: {{ user_creation.results | default([]) }}"
+            var: user_id_map
+    
+    - name: Update ServiceNow ticket state to "Closed Complete" for approved requests
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.request_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          request_state: "closed_complete"
+          comments: "Azure user {{ item.user_principal_name }} has been created successfully. Ticket closed."
+        return_content: yes
+      loop: "{{ approved_users }}"
+      loop_control:
+        label: "{{ item.request_number }}"
+      when: 
+        - item.request_id in approval_status_map
+        - approval_status_map[item.request_id] == 'approved'
+        - user_id_map[item.request_id] is defined and user_id_map[item.request_id] | length > 0
+      register: ticket_state_update_results
+
+    - name: Display Ticket State Update Results
+      debug:
+        msg: "ServiceNow Ticket Updates: {{ ticket_state_update_results.results | default([]) }}"
