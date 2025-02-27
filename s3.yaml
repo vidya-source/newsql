@@ -1,24 +1,18 @@
 ---
-- name: Process License Requests from ServiceNow in Azure
+- name: Fetch Pending ServiceNow Requests
   hosts: localhost
-  connection: local
   gather_facts: no
-  
   vars:
-    # ServiceNow Configuration
     servicenow_instance: "https://dev247928.service-now.com"
-    servicenow_table: "sc_request"
     servicenow_username: "admin"
     servicenow_password: "%ml4Vs9RXE/s"
-    
-    # Azure Configuration
+    servicenow_table: "sc_request"
     tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
     client_secret: "{{client_secret}}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-  
+    
   tasks:
-    # Step 1: Fetch pending requests from ServiceNow
     - name: Fetch pending requests from ServiceNow
       uri:
         url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=request_state=requested"
@@ -28,8 +22,28 @@
         force_basic_auth: yes
         return_content: yes
       register: servicenow_response
-    
-    # Step 2: Get Azure access token for authentication
+
+    - name: Store Requested License Type
+      set_fact:
+        requested_license_map: >-
+          {{
+            servicenow_response.json.result |
+            items2dict(key_name='sys_id', value_name='short_description')
+          }}
+
+    - name: Display request details
+      debug:
+        msg: |
+          {% for request in servicenow_response.json.result %}
+          Request Number: {{ request.get('number', 'N/A') }}
+          Sys ID: {{ request.get('sys_id', 'N/A') }}
+          User ID (Requested For): {{ request.get('requested_for', {}).get('value', 'Unknown') }}
+          User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
+          Requested License Type: {{ request.get('short_description', 'Not Provided') }}
+          Description: {{ request.get('description', 'Not Provided') }}
+          ------------------------------------------------
+          {% endfor %}
+
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -42,12 +56,11 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
-    
+
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-    
-    # Step 3: Check License Availability in Azure
+
     - name: Check License Availability in Azure
       uri:
         url: "{{ graph_api_endpoint }}/subscribedSkus"
@@ -57,52 +70,23 @@
           Content-Type: "application/json"
         return_content: yes
       register: azure_license_response
-    
-    # Step 4: Process License Approval based on availability
-    - name: Process License Approval
-      block:
-        - name: Create availability status map
-          set_fact:
-            license_available: false
-        
-        - name: Check if TEST_LICENSE_1 is available with sufficient licenses
-          set_fact:
-            license_available: "{{ has_available_licenses }}"
-          vars:
-            test_license: "{{ azure_license_response.json.value | selectattr('skuPartNumber', 'equalto', 'TEST_LICENSE_1') | list | first | default({}) }}"
-            has_available_licenses: >-
-              {{ 
-                test_license is defined and 
-                test_license.prepaidUnits is defined and 
-                test_license.consumedUnits is defined and 
-                (test_license.prepaidUnits.enabled - test_license.consumedUnits) > 0 
-              }}
-        
-        - name: Create request status map
-          set_fact:
-            request_status_map: "{{ dict(request_map) }}"
-          vars:
-            request_map: "{{ servicenow_response.json.result | map(attribute='sys_id') | 
-                          map('regex_replace', '^(.*)$', '\\1=' + (license_available | ternary('pending_approval', 'rejected'))) | 
-                          map('split', '=') | list }}"
-        
-        # Step 5: Update Request State in ServiceNow based on license availability
-        - name: Update Request State in ServiceNow
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.key }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            headers:
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              request_state: "{{ item.value }}"
-            return_content: yes
-          loop: "{{ request_status_map | dict2items }}"
-          
-    # Optional: Add logging or notification tasks
-    - name: Log results
+
+    - name: Add dummy license data for testing (remove this after u have real lic)
+      set_fact:
+        azure_license_response:
+          json:
+            value:
+              - id: "dummy-license-1"
+                skuPartNumber: "TEST_LICENSE_1"
+                prepaidUnits:
+                  enabled: 5
+                consumedUnits: 3
+              - id: "dummy-license-2"
+                skuPartNumber: "TEST_LICENSE_2"
+                prepaidUnits:
+                  enabled: 10
+                consumedUnits: 10
+
+    - name: Display license availability
       debug:
-        msg: "Processed {{ request_status_map | length }} license requests. License available: {{ license_available }}"
+        msg: "Available Licenses: {{ azure_license_response.json }}"
