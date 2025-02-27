@@ -1,18 +1,24 @@
 ---
-- name: Fetch Pending ServiceNow Requests
+- name: Process License Requests from ServiceNow in Azure
   hosts: localhost
+  connection: local
   gather_facts: no
+  
   vars:
+    # ServiceNow Configuration
     servicenow_instance: "https://dev247928.service-now.com"
+    servicenow_table: "sc_request"
     servicenow_username: "admin"
     servicenow_password: "%ml4Vs9RXE/s"
-    servicenow_table: "sc_request"
+    
+    # Azure Configuration
     tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
     client_secret: "{{client_secret}}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    
+  
   tasks:
+    # Step 1: Fetch pending requests from ServiceNow
     - name: Fetch pending requests from ServiceNow
       uri:
         url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=request_state=requested"
@@ -22,28 +28,8 @@
         force_basic_auth: yes
         return_content: yes
       register: servicenow_response
-
-    - name: Store Requested License Type
-      set_fact:
-        requested_license_map: >-
-          {{
-            servicenow_response.json.result |
-            items2dict(key_name='sys_id', value_name='short_description')
-          }}
-
-    - name: Display request details
-      debug:
-        msg: |
-          {% for request in servicenow_response.json.result %}
-          Request Number: {{ request.get('number', 'N/A') }}
-          Sys ID: {{ request.get('sys_id', 'N/A') }}
-          User ID (Requested For): {{ request.get('requested_for', {}).get('value', 'Unknown') }}
-          User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
-          Requested License Type: {{ request.get('short_description', 'Not Provided') }}
-          Description: {{ request.get('description', 'Not Provided') }}
-          ------------------------------------------------
-          {% endfor %}
-
+    
+    # Step 2: Get Azure access token for authentication
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -56,11 +42,12 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
-
+    
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-
+    
+    # Step 3: Check License Availability in Azure
     - name: Check License Availability in Azure
       uri:
         url: "{{ graph_api_endpoint }}/subscribedSkus"
@@ -70,33 +57,14 @@
           Content-Type: "application/json"
         return_content: yes
       register: azure_license_response
-
-    - name: Add dummy license data for testing (remove this after u have real lic)
-      set_fact:
-        azure_license_response:
-          json:
-            value:
-              - id: "dummy-license-1"
-                skuPartNumber: "TEST_LICENSE_1"
-                prepaidUnits:
-                  enabled: 5
-                consumedUnits: 3
-              - id: "dummy-license-2"
-                skuPartNumber: "TEST_LICENSE_2"
-                prepaidUnits:
-                  enabled: 10
-                consumedUnits: 10
-
-    - name: Display license availability
-      debug:
-        msg: "Available Licenses: {{ azure_license_response.json }}"
-
+    
+    # Step 4: Process License Approval based on availability
     - name: Process License Approval
       block:
-        - name: Create approval status map
+        - name: Create availability status map
           set_fact:
             license_available: false
-
+        
         - name: Check if TEST_LICENSE_1 is available with sufficient licenses
           set_fact:
             license_available: "{{ has_available_licenses }}"
@@ -109,16 +77,17 @@
                 test_license.consumedUnits is defined and 
                 (test_license.prepaidUnits.enabled - test_license.consumedUnits) > 0 
               }}
-
-        - name: Create approval status dictionary
+        
+        - name: Create request status map
           set_fact:
-            approval_status_map: "{{ dict(request_map) }}"
+            request_status_map: "{{ dict(request_map) }}"
           vars:
             request_map: "{{ servicenow_response.json.result | map(attribute='sys_id') | 
-                          map('regex_replace', '^(.*)$', '\\1=' + (license_available | ternary('approved', 'rejected'))) | 
+                          map('regex_replace', '^(.*)$', '\\1=' + (license_available | ternary('pending_approval', 'rejected'))) | 
                           map('split', '=') | list }}"
-
-        - name: Update Approval Status in ServiceNow
+        
+        # Step 5: Update Request State in ServiceNow based on license availability
+        - name: Update Request State in ServiceNow
           uri:
             url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.key }}"
             method: PATCH
@@ -129,209 +98,11 @@
               Content-Type: "application/json"
             body_format: json
             body:
-              approval: "{{ item.value }}"
+              request_state: "{{ item.value }}"
             return_content: yes
-          loop: "{{ approval_status_map | dict2items }}"
-
-        - name: Display Approval Results
-          debug:
-            msg: 
-              - "License Available: {{ license_available }}"
-              - "Approval Status Updated: {{ approval_status_map }}"
-
-    - name: Create user list for approved requests
-      block:
-        - name: Get approved request IDs
-          set_fact:
-            approved_requests: "{{ servicenow_response.json.result | selectattr('sys_id', 'in', approved_request_ids) | list }}"
-            approved_users: []
-          vars:
-            approved_request_ids: "{{ approval_status_map | dict2items | selectattr('value', 'equalto', 'approved') | map(attribute='key') | list }}"
-        
-        - name: Process each approved request
-          block:
-            - name: Fetch request item for current request
-              uri:
-                url: "{{ servicenow_instance }}/api/now/table/sc_req_item?sysparm_query=request={{ current_request.sys_id }}"
-                method: GET
-                user: "{{ servicenow_username }}"
-                password: "{{ servicenow_password }}"
-                force_basic_auth: yes
-                return_content: yes
-              register: ritm_response
-
-            - name: Set RITM variables
-              set_fact:
-                current_ritm: "{{ ritm_response.json.result[0] }}"
-                variable_values: []
-                catalog_variables: {}
-              when: ritm_response.json.result | length > 0
-
-            - name: Fetch catalog item variables
-              uri:
-                url: "{{ servicenow_instance }}/api/now/table/sc_item_option_mtom?sysparm_query=request_item={{ current_ritm.sys_id }}"
-                method: GET
-                user: "{{ servicenow_username }}"
-                password: "{{ servicenow_password }}"
-                force_basic_auth: yes
-                return_content: yes
-              register: variables_response
-              when: current_ritm is defined
-
-            - name: Fetch variable details for each option
-              uri:
-                url: "{{ servicenow_instance }}/api/now/table/sc_item_option/{{ item.sc_item_option.value }}"
-                method: GET
-                user: "{{ servicenow_username }}"
-                password: "{{ servicenow_password }}"
-                force_basic_auth: yes
-                return_content: yes
-              register: option_value_details
-              loop: "{{ variables_response.json.result }}"
-              when: current_ritm is defined and variables_response.json.result is defined and variables_response.json.result | length > 0
-
-            - name: Extract variable values and IDs
-              set_fact:
-                variable_values: "{{ variable_values | default([]) + [{'value': item.json.result.value, 'item_option_id': item.json.result.item_option_new.value}] }}"
-              loop: "{{ option_value_details.results }}"
-              when: current_ritm is defined and option_value_details.results is defined
-
-            - name: Fetch variable names for each option
-              uri:
-                url: "{{ servicenow_instance }}/api/now/table/item_option_new/{{ item.item_option_id }}"
-                method: GET
-                user: "{{ servicenow_username }}"
-                password: "{{ servicenow_password }}"
-                force_basic_auth: yes
-                return_content: yes
-              register: option_name_details
-              loop: "{{ variable_values | default([]) }}"
-              when: current_ritm is defined and variable_values is defined and variable_values | length > 0
-
-            - name: Create catalog variables dictionary
-              set_fact:
-                catalog_variables: "{{ catalog_variables | default({}) | combine({item.0.json.result.question_text: item.1.value}) }}"
-              loop: "{{ option_name_details.results | default([]) | zip(variable_values | default([])) | list }}"
-              when: current_ritm is defined and option_name_details.results is defined and option_name_details.results | length > 0
-
-            - name: Add user to approved users list
-              set_fact:
-                approved_users: "{{ approved_users + [user_info] }}"
-              vars:
-                user_email: "{{ catalog_variables.Email | default(current_request.requested_for.email) | default('suhas@yourdomain.com') }}"
-                user_name: "{{ catalog_variables.DisplayName | default(current_request.requested_for.name) | default('Suhas 123') }}"
-                mail_nickname: "{{ catalog_variables.mailNickname | default((user_name | regex_replace('[^a-zA-Z0-9]', '') | lower)) }}"
-                user_principal_name: "{{ catalog_variables.userPrincipalName | default(mail_nickname ~ '@amitomar63gmail.onmicrosoft.com') }}"
-                user_info: {
-                  'request_id': current_request.sys_id,
-                  'request_number': current_request.number,
-                  'ritm_id': current_ritm.sys_id | default(''),
-                  'ritm_number': current_ritm.number | default(''),
-                  'user_email': user_email,
-                  'user_name': user_name,
-                  'license_type': current_request.short_description | regex_replace(' requested', ''),
-                  'mail_nickname': mail_nickname,
-                  'user_principal_name': user_principal_name,
-                  'catalog_variables': catalog_variables | default({})
-                }
-              when: current_request is defined
-          loop: "{{ approved_requests }}"
-          loop_control:
-            loop_var: current_request
-            label: "Request: {{ current_request.number }}"
-
-    - name: Debug - Show Approved Users
+          loop: "{{ request_status_map | dict2items }}"
+          
+    # Optional: Add logging or notification tasks
+    - name: Log results
       debug:
-        msg: "Approved Users List: {{ approved_users }}"
-
-    - name: License Assignment Process
-      block:
-        - name: Check if user exists in Azure AD
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ item.user_principal_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: user_check
-          loop: "{{ approved_users }}"
-          loop_control:
-            index_var: ansible_index
-            label: "{{ item.user_principal_name }}"
-          ignore_errors: yes
-
-        - name: Debug - Show User Check Results
-          debug:
-            var: user_check.results
-
-        - name: Create User in Azure AD if Not Exists
-          uri:
-            url: "{{ graph_api_endpoint }}/users"
-            method: POST
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            body:
-              accountEnabled: true
-              displayName: "{{ item.user_name }}"
-              mailNickname: "{{ item.mail_nickname }}"
-              userPrincipalName: "{{ item.user_principal_name }}"
-              passwordProfile:
-                forceChangePasswordNextSignIn: true
-                password: "Default@1234"
-            body_format: json
-            status_code: [201]
-          register: user_creation
-          when: (user_check.results[ansible_index].status is defined and user_check.results[ansible_index].status == 404) or 
-                (user_check.results[ansible_index] is failed)
-          loop: "{{ approved_users }}"
-          loop_control:
-            index_var: ansible_index
-            label: "{{ item.user_principal_name }}"
-
-        - name: Debug - Show User Creation Results
-          debug:
-            msg: "User Creation Results: {{ user_creation.results | default([]) }}"
-
-        - name: Store Created User IDs
-          set_fact:
-            user_id_map: >-
-              {%- set user_map = {} -%}
-              {%- for item in approved_users -%}
-                {%- set user_id = (user_creation.results[loop.index0].json.id | default('')) if user_creation.results[loop.index0] is defined else '' -%}
-                {%- set _ = user_map.update({item.request_id: user_id}) -%}
-              {%- endfor -%}
-              {{ user_map }}
-
-        - name: Debug - Show User ID Map
-          debug:
-            var: user_id_map
-    
-    - name: Update ServiceNow ticket state to "Closed Complete" for approved requests
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.request_id }}"
-        method: PATCH
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        headers:
-          Content-Type: "application/json"
-        body_format: json
-        body:
-          request_state: "closed_complete"
-          comments: "Azure user {{ item.user_principal_name }} has been created successfully. Ticket closed."
-        return_content: yes
-      loop: "{{ approved_users }}"
-      loop_control:
-        label: "{{ item.request_number }}"
-      when: 
-        - item.request_id in approval_status_map
-        - approval_status_map[item.request_id] == 'approved'
-        - user_id_map[item.request_id] is defined and user_id_map[item.request_id] | length > 0
-      register: ticket_state_update_results
-
-    - name: Display Ticket State Update Results
-      debug:
-        msg: "ServiceNow Ticket Updates: {{ ticket_state_update_results.results | default([]) }}"
+        msg: "Processed {{ request_status_map | length }} license requests. License available: {{ license_available }}"
