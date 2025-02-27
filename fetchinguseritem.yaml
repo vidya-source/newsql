@@ -1,5 +1,5 @@
 ---
-- name: Fetch Pending ServiceNow Requests
+- name: Fetch Pending ServiceNow Requests and Check License Availability
   hosts: localhost
   gather_facts: no
   vars:
@@ -9,10 +9,26 @@
     servicenow_table: "sc_request"
     tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
-    client_secret: "{{client_secret}}"
+    client_secret: "{{client_secret}}
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    
+    request_id: "{request_id}"  # Can be RITM number or sys_id
+  
   tasks:
+    - name: Set query parameter based on input format
+      set_fact:
+        query_param: >-
+          {% if request_id.startswith('RITM') %}number={{ request_id }}{% else %}sys_id={{ request_id }}{% endif %}
+ 
+    - name: Fetch requested item details from ServiceNow
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_req_item?sysparm_query={{ query_param }}"
+        method: GET
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        return_content: yes
+      register: ritm_response
+    
     - name: Fetch pending requests from ServiceNow
       uri:
         url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=request_state=requested"
@@ -28,21 +44,22 @@
         requested_license_map: >-
           {{
             servicenow_response.json.result |
-            items2dict(key_name='number', value_name='short_description')
+            items2dict(key_name='sys_id', value_name='short_description')
           }}
-          
+
     - name: Display request details
       debug:
         msg: |
           {% for request in servicenow_response.json.result %}
           Request Number: {{ request.get('number', 'N/A') }}
+          Sys ID: {{ request.get('sys_id', 'N/A') }}
           User ID (Requested For): {{ request.get('requested_for', {}).get('value', 'Unknown') }}
           User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
           Requested License Type: {{ request.get('short_description', 'Not Provided') }}
           Description: {{ request.get('description', 'Not Provided') }}
           ------------------------------------------------
           {% endfor %}
-          
+
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -59,7 +76,7 @@
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-    
+
     - name: Check License Availability in Azure
       uri:
         url: "{{ graph_api_endpoint }}/subscribedSkus"
@@ -69,7 +86,7 @@
           Content-Type: "application/json"
         return_content: yes
       register: azure_license_response
-      
+
     - name: Add dummy license data for testing (remove this after u have real lic)
       set_fact:
         azure_license_response:
@@ -84,202 +101,8 @@
                 skuPartNumber: "TEST_LICENSE_2"
                 prepaidUnits:
                   enabled: 10
-                consumedUnits: 7
-                
+                consumedUnits: 10
+
     - name: Display license availability
       debug:
         msg: "Available Licenses: {{ azure_license_response.json }}"
-
-    - name: Process License Approval
-      block:
-        - name: Check License Availability
-          set_fact:
-            approval_status_map: >-
-              {%- set status_map = {} -%}
-              {%- for request_number, license_type in requested_license_map.items() -%}
-                {%- set clean_license_type = license_type | lower | regex_replace(' requested', '') -%}
-                {%- set found = false -%}
-                {%- for license in azure_license_response.json.value -%}
-                  {%- if license.skuPartNumber | lower == clean_license_type -%}
-                    {%- set _ = status_map.update({request_number: 'approved'}) -%}
-                    {%- set found = true -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {%- if not found -%}
-                  {%- set _ = status_map.update({request_number: 'rejected'}) -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ status_map }}
-
-        - name: Update Approval Status in ServiceNow
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.sys_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            headers:
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              approval: "{{ approval_status_map[item.number] }}"
-            return_content: yes
-          loop: "{{ servicenow_response.json.result }}"
-          when: 
-            - approval_status_map is not none
-            - item.number in approval_status_map
-          register: approval_updates
-
-        - name: Display Approval Results
-          debug:
-            msg: 
-              - "Approval Status Updated: {{ approval_status_map }}"
-
-    - name: Create user list for approved requests
-      set_fact:
-        approved_users: >-
-          {%- set users = [] -%}
-          {%- for request in servicenow_response.json.result -%}
-            {%- if request.number in approval_status_map and approval_status_map[request.number] == 'approved' -%}
-              {%- set user_info = {
-                'request_id': request.sys_id,
-                'request_number': request.number,
-                'user_email': request.requested_for.email | default(''),
-                'user_name': request.requested_for.name | default(''),
-                'license_type': request.short_description | regex_replace(' requested', '')
-              } -%}
-              {%- set _ = users.append(user_info) -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {{ users }}
-      when: approval_status_map is defined
-
-    - name: License Assignment Process
-      block:
-        - name: Create Azure User Accounts for approved requests
-          uri:
-            url: "{{ graph_api_endpoint }}/users"
-            method: POST
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              accountEnabled: true
-              displayName: "{{ item.user_name }}"
-              mailNickname: "{{ item.user_name | regex_replace('[^a-zA-Z0-9]', '') }}"
-              userPrincipalName: "{{ item.user_email }}"
-              passwordProfile:
-                forceChangePasswordNextSignIn: true
-                password: "TempP@ss{{ 1000 | random }}"
-            status_code: [201, 409]  # 409 means user already exists
-            return_content: yes
-          register: user_creation_result
-          loop: "{{ approved_users }}"
-          when: approved_users is defined
-          ignore_errors: yes
-
-        - name: Prepare license assignments
-          set_fact:
-            license_assignments: >-
-              {%- set assignments = [] -%}
-              {%- for user in user_creation_result.results | default([]) -%}
-                {%- if user.status == 201 or user.status == 409 -%}
-                  {%- set user_id = user.json.id | default('') -%}
-                  {%- if user.status == 409 -%}
-                    {%- set user_lookup_url = graph_api_endpoint + '/users?$filter=userPrincipalName eq \'' + user.item.user_email + '\'' -%}
-                    {%- set user_lookup = lookup('url', user_lookup_url, headers={'Authorization': 'Bearer ' + access_token}) | from_json -%}
-                    {%- if user_lookup.value | length > 0 -%}
-                      {%- set user_id = user_lookup.value[0].id -%}
-                    {%- endif -%}
-                  {%- endif -%}
-                  {%- for license in azure_license_response.json.value -%}
-                    {%- if license.skuPartNumber | lower == user.item.license_type | lower -%}
-                      {%- set assignment = {
-                        'user_id': user_id,
-                        'license_id': license.id,
-                        'request_id': user.item.request_id,
-                        'request_number': user.item.request_number
-                      } -%}
-                      {%- set _ = assignments.append(assignment) -%}
-                    {%- endif -%}
-                  {%- endfor -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ assignments }}
-          when: user_creation_result is defined
-
-        - name: Assign licenses to users
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ item.user_id }}/assignLicense"
-            method: POST
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              addLicenses:
-                - skuId: "{{ item.license_id }}"
-              removeLicenses: []
-            status_code: [200, 201]
-            return_content: yes
-          register: license_assignment_result
-          loop: "{{ license_assignments }}"
-          when: license_assignments is defined
-          ignore_errors: yes
-
-        - name: Update License Database (Custom DB or ServiceNow)
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/license_tracking"  # Assuming a license_tracking table exists
-            method: POST
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            headers:
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              request_number: "{{ item.request_number }}"
-              license_id: "{{ item.license_id }}"
-              user_id: "{{ item.user_id }}"
-              assignment_date: "{{ ansible_date_time.iso8601 }}"
-              status: "active"
-            return_content: yes
-          loop: "{{ license_assignments }}"
-          when: license_assignments is defined
-          ignore_errors: yes
-          register: license_db_updates
-
-        - name: Update ServiceNow request with license assignment details
-          uri:
-            url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}/{{ item.request_id }}"
-            method: PATCH
-            user: "{{ servicenow_username }}"
-            password: "{{ servicenow_password }}"
-            force_basic_auth: yes
-            headers:
-              Content-Type: "application/json"
-            body_format: json
-            body:
-              work_notes: "License has been assigned and Azure account created. License ID: {{ item.license_id }}"
-              state: "closed_complete"
-            return_content: yes
-          loop: "{{ license_assignments }}"
-          when: license_assignments is defined
-          register: servicenow_updates
-
-        - name: Generate license assignment report
-          debug:
-            msg: |
-              License Assignment Summary:
-              --------------------------------------
-              Total Approved Requests: {{ approved_users | length | default(0) }}
-              Azure Accounts Created: {{ user_creation_result.results | selectattr('status', 'equalto', 201) | list | length | default(0) }}
-              Licenses Assigned: {{ license_assignment_result.results | selectattr('status', 'in', [200, 201]) | list | length | default(0) }}
-              License Database Updates: {{ license_db_updates.results | selectattr('status', 'in', [200, 201]) | list | length | default(0) }}
-              
-              Details:
-              {% for assignment in license_assignments | default([]) %}
-              - Request: {{ assignment.request_number }}, License ID: {{ assignment.license_id }}
-              {% endfor %}
-          when: license_assignments is defined
