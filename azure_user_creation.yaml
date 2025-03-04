@@ -1,0 +1,71 @@
+---
+- name: Fetch Pending ServiceNow Requests
+  hosts: localhost
+  gather_facts: no
+  vars:
+    servicenow_instance: "https://dev247928.service-now.com"
+    servicenow_username: "admin"
+    servicenow_password: "%ml4Vs9RXE/s"
+    servicenow_table: "sc_request"
+    tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
+    client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
+    client_secret: "PQZ8Q~XSmMsU4dbgk2KyWMHK1h8X7ciD~H.1_csi"
+    graph_api_endpoint: "https://graph.microsoft.com/v1.0"
+    default_user_email: "suhas@yourdomain.com"
+    default_user_name: "Suhas 123"
+    default_mail_nickname: "defaultuser123"
+    default_license_type: "E3"
+ 
+  tasks:
+    - name: Get Azure access token
+      uri:
+        url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
+        method: POST
+        body:
+          client_id: "{{ client_id }}"
+          client_secret: "{{ client_secret }}"
+          scope: "https://graph.microsoft.com/.default"
+          grant_type: "client_credentials"
+        body_format: form-urlencoded
+        return_content: yes
+      register: azure_auth_response
+ 
+    - name: Set Azure token
+      set_fact:
+        access_token: "{{ azure_auth_response.json.access_token }}"
+ 
+    - name: Check if user exists in Azure AD
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check
+      ignore_errors: yes
+ 
+    - name: Debug - Show User Check Results
+      debug:
+        var: user_check
+ 
+    - name: Create User in Azure AD if Not Exists
+      uri:
+        url: "{{ graph_api_endpoint }}/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        body:
+          accountEnabled: true
+          displayName: "{{ default_user_name }}"
+          mailNickname: "{{ default_mail_nickname }}"
+          userPrincipalName: "{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+          passwordProfile:
+            forceChangePasswordNextSignIn: true
+            password: "Default@1234"
+        body_format: json
+        status_code: [201]
+      register: user_creation
+      when: user_check.status == 404
