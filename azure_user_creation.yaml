@@ -46,62 +46,44 @@
       register: default_user_check
       ignore_errors: yes
 
-    # If default is available, use it
-    - name: Set username to default if available
+    # Use default if available, otherwise set available_nickname later
+    - name: Set username variables
       set_fact:
-        username_found: true
-        available_nickname: "{{ default_mail_nickname }}"
-      when: default_user_check.status is defined and default_user_check.status == 404
+        available_nickname: "{% if default_user_check.status is defined and default_user_check.status == 404 %}{{ default_mail_nickname }}{% else %}not_set_yet{% endif %}"
 
-    # If default is not available, initialize for search
-    - name: Initialize for username search
-      set_fact:
-        username_found: false
-        current_attempt: 1
-      when: default_user_check.status is defined and default_user_check.status == 200
-
-    # Try usernames with incremental numbers until one is found
-    - name: Search for available username
+    # Only run this section if default username is not available
+    - name: Find available alternative username
       block:
-        - name: Check username with current number
+        - name: Check username with number
           uri:
-            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ current_attempt }}@{{ domain_name }}"
+            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ item }}@{{ domain_name }}"
             method: GET
             headers:
               Authorization: "Bearer {{ access_token }}"
               Content-Type: "application/json"
             status_code: [200, 404]
             return_content: yes
-          register: current_check
+          register: username_result
           ignore_errors: yes
-
-        - name: Set username if current attempt is available
+          with_sequence: start=1 end=10  # Try first 10 numbers
+          when: available_nickname == "not_set_yet"
+        
+        - name: Set available nickname from results
           set_fact:
-            username_found: true
-            available_nickname: "{{ default_mail_nickname }}{{ current_attempt }}"
-          when: current_check.status is defined and current_check.status == 404
-
-        - name: Increment attempt counter
-          set_fact:
-            current_attempt: "{{ current_attempt | int + 1 }}"
-          when: not username_found
-
-        - name: Debug current attempt
-          debug:
-            msg: "Checked username {{ default_mail_nickname }}{{ current_attempt - 1 }} - Available: {{ username_found }}"
-
-        - name: Loop control
-          fail:
-            msg: "Max attempts reached without finding available username"
-          when: current_attempt > max_attempts and not username_found
-      when: not username_found
-      until: username_found or current_attempt > max_attempts
-      retries: "{{ max_attempts }}"
-      delay: 1
+            available_nickname: "{{ default_mail_nickname }}{{ item.item }}"
+          with_items: "{{ username_result.results }}"
+          when: 
+            - available_nickname == "not_set_yet"
+            - item.status is defined 
+            - item.status == 404
+          loop_control:
+            label: "{{ default_mail_nickname }}{{ item.item }}"
+          run_once: true
+      when: default_user_check.status is defined and default_user_check.status == 200
 
     - name: Debug - Selected username
       debug:
-        msg: "Selected username: {{ available_nickname }}@{{ domain_name }} (Found: {{ username_found }})"
+        msg: "Selected username: {{ available_nickname }}@{{ domain_name }}"
 
     - name: Create User in Azure AD with available username
       uri:
@@ -121,4 +103,4 @@
         body_format: json
         status_code: [201]
       register: user_creation
-      when: username_found
+      when: available_nickname != "not_set_yet"
