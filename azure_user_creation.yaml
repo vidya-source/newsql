@@ -41,55 +41,42 @@
         available_nickname: ""
         current_number: "{{ start_number }}"
 
-    # This task runs until an available username is found or max is reached
-    - name: Check username sequentially
-      block:
-        - name: Check if current username exists in Azure AD
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ current_number }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: username_check
-          ignore_errors: yes
-          
-        - name: Debug current check
-          debug:
-            msg: "Checking {{ default_mail_nickname }}{{ current_number }} - Status: {{ username_check.status | default('error') }}"
-          
-        # If username is available, set flag and name
-        - name: Set username if available
-          set_fact:
-            username_available: true
-            available_nickname: "{{ default_mail_nickname }}{{ current_number }}"
-          when: username_check.status is defined and username_check.status == 404
-          
-        # If not available, increment counter
-        - name: Increment counter if username not available
-          set_fact:
-            current_number: "{{ current_number | int + 1 }}"
-          when: 
-            - not username_available
-            - username_check.status is defined 
-            - username_check.status == 200
-            - current_number | int < max_number
-      # Use register/until to control the loop
-      register: check_result
-      until: username_available or current_number | int > max_number
-      # Retry enough times to check all numbers from start to max
-      retries: "{{ max_number - start_number + 1 }}"
+    # Use loop instead of block with register
+    - name: Check username availability
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ current_number }}@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: username_check
+      ignore_errors: yes
+      until: username_check.status is defined and username_check.status == 404 or current_number | int >= max_number
+      retries: "{{ max_number - start_number }}"
       delay: 1
+      vars:
+        current_number: "{{ current_number | int + 1 if (username_check is defined and username_check.status is defined and username_check.status == 200) else current_number }}"
       
+    - name: Debug current check
+      debug:
+        msg: "Last checked {{ default_mail_nickname }}{{ current_number }} - Status: {{ username_check.status | default('error') }}"
+          
+    # Set username availability based on the check results
+    - name: Set username if available
+      set_fact:
+        username_available: "{{ username_check.status is defined and username_check.status == 404 }}"
+        available_nickname: "{{ default_mail_nickname }}{{ current_number }}"
+      when: username_check.status is defined and username_check.status == 404
+    
     - name: Debug - Final result
       debug:
         msg: >
           {% if username_available %}
           Found available username: {{ available_nickname }}@{{ domain_name }}
           {% else %}
-          No available username found after checking {{ current_number | int - 1 }} options
+          No available username found after checking {{ current_number | int }} options
           {% endif %}
 
     # Create user only if username is available
