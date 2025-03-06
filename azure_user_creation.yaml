@@ -50,31 +50,17 @@
     
     - name: Find available username if original exists
       when: user_exists
-      loop: "{{ range(1, 101) | list }}"
-      loop_control:
-        loop_var: user_number
-      tasks:
-        - name: Set current nickname
+      block:
+        - name: Loop to find available username
           set_fact:
-            current_nickname: "{{ default_mail_nickname }}{{ user_number }}"
+            selected_username: ""
         
-        - name: Check if incremented username exists
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: incremented_user_check
-          ignore_errors: yes
-        
-        - name: Stop loop if username is available
-          set_fact:
-            selected_username: "{{ current_nickname }}@{{ domain_name }}"
-          when: incremented_user_check.status == 404
-          break
+        - name: Iterate through possible usernames
+          include_tasks: find_username.yaml
+          loop: "{{ range(1, 101) | list }}"
+          loop_control:
+            loop_var: user_number
+          when: selected_username == ""
     
     - name: Debug - Selected username
       debug:
