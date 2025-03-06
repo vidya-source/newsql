@@ -1,21 +1,19 @@
----
 - name: Fetch Pending ServiceNow Requests
   hosts: localhost
   gather_facts: no
   vars:
     servicenow_instance: "https://dev247928.service-now.com"
-    servicenow_username: "admin"
-    servicenow_password: "%ml4Vs9RXE/s"
-    servicenow_table: "sc_request"
-    tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
-    client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
-    client_secret: "PQZ8Q~XSmMsU4dbgk2KyWMHK1h8X7ciD~H.1_csi"
+    servicenow_username: "{{ service_now_username }}"
+    servicenow_password: "{{ service_now_password }}"
+    tenant_id: "{{ azure_tenant_id }}"
+    client_id: "{{ azure_client_id }}"
+    client_secret: "{{ azure_client_secret }}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    default_user_email: "suhas@yourdomain.com"
-    default_user_name: "Suhas 123"
-    default_mail_nickname: "defaultuser123"
-    default_license_type: "E3"
- 
+    default_user_email: "{{ awx_webhook_payload.user_email }}"
+    default_user_name: "{{ awx_webhook_payload.user_name}}"
+    default_mail_nickname: "{{ awx_webhook_payload.nickname}}"
+    domain_name: "amitomar63gmail.onmicrosoft.com"
+    max_iterations: 10  # Maximum number of attempts to find a unique username
   tasks:
     - name: Get Azure access token
       uri:
@@ -29,28 +27,59 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
- 
+
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
- 
-    - name: Check if user exists in Azure AD
-      uri:
-        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ access_token }}"
-          Content-Type: "application/json"
-        status_code: [200, 404]
-        return_content: yes
-      register: user_check
-      ignore_errors: yes
- 
-    - name: Debug - Show User Check Results
+    
+    - name: Initialize variables for user creation
+      set_fact:
+        current_nickname: "{{ default_mail_nickname }}"
+        suffix_count: 0
+        user_found: true
+    
+    - name: Find available username
+      block:
+        - name: Check if user exists in Azure AD
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 404]
+            return_content: yes
+          register: user_check
+          ignore_errors: yes
+        
+        - name: Set user_found flag based on HTTP status
+          set_fact:
+            user_found: "{{ user_check.status == 200 }}"
+        
+        - name: Increment suffix and update nickname if user exists
+          set_fact:
+            suffix_count: "{{ suffix_count | int + 1 }}"
+            current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int + 1 }}"
+          when: user_found
+        
+        - name: Debug - Current attempt
+          debug:
+            msg: "Checking username: {{ current_nickname }}@{{ domain_name }} (Attempt {{ suffix_count }})"
+          when: user_found
+      rescue:
+        - name: Handle API errors
+          debug:
+            msg: "Error occurred while checking username: {{ current_nickname }}"
+      
+      until: not user_found or suffix_count >= max_iterations
+      retries: "{{ max_iterations }}"
+      delay: 1
+    
+    - name: Debug - Final username selection
       debug:
-        var: user_check
- 
-    - name: Create User in Azure AD if Not Exists
+        msg: "Selected username: {{ current_nickname }}@{{ domain_name }}"
+    
+    - name: Create User in Azure AD with available username
       uri:
         url: "{{ graph_api_endpoint }}/users"
         method: POST
@@ -60,12 +89,17 @@
         body:
           accountEnabled: true
           displayName: "{{ default_user_name }}"
-          mailNickname: "{{ default_mail_nickname }}"
-          userPrincipalName: "{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+          mailNickname: "{{ current_nickname }}"
+          userPrincipalName: "{{ current_nickname }}@{{ domain_name }}"
           passwordProfile:
             forceChangePasswordNextSignIn: true
             password: "Default@1234"
         body_format: json
         status_code: [201]
       register: user_creation
-      when: user_check.status == 404
+      when: suffix_count < max_iterations
+    
+    - name: Notify if maximum iterations reached without creating user
+      debug:
+        msg: "Failed to find available username after {{ max_iterations }} attempts"
+      when: suffix_count >= max_iterations
