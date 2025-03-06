@@ -32,14 +32,33 @@
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
     
-    - name: Initialize username search
+    - name: Check if original username exists in Azure AD
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check
+      ignore_errors: yes
+    
+    - name: Set user exists flag
       set_fact:
-        current_nickname: "{{ default_mail_nickname }}"
-        loop_index: 1
+        user_exists: "{{ user_check.status == 200 }}"
     
     - name: Find available username if original exists
-      block:
-        - name: Check username availability in Azure AD
+      when: user_exists
+      loop: "{{ range(1, 101) | list }}"
+      loop_control:
+        loop_var: user_number
+      tasks:
+        - name: Set current nickname
+          set_fact:
+            current_nickname: "{{ default_mail_nickname }}{{ user_number }}"
+        
+        - name: Check if incremented username exists
           uri:
             url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
             method: GET
@@ -47,21 +66,19 @@
               Authorization: "Bearer {{ access_token }}"
               Content-Type: "application/json"
             status_code: [200, 404]
-          register: username_check
+            return_content: yes
+          register: incremented_user_check
           ignore_errors: yes
-
-        - name: Increment loop index if username exists
+        
+        - name: Stop loop if username is available
           set_fact:
-            current_nickname: "{{ default_mail_nickname }}{{ loop_index }}"
-            loop_index: "{{ loop_index | int + 1 }}"
-          when: username_check.status == 200
-      until: username_check.status == 404
-      retries: 100
-      delay: 1
+            selected_username: "{{ current_nickname }}@{{ domain_name }}"
+          when: incremented_user_check.status == 404
+          break
     
     - name: Debug - Selected username
       debug:
-        msg: "Selected username: {{ current_nickname }}@{{ domain_name }}"
+        msg: "Selected username: {{ selected_username }}"
     
     - name: Create User in Azure AD with available username
       uri:
@@ -73,8 +90,8 @@
         body:
           accountEnabled: true
           displayName: "{{ default_user_name }}"
-          mailNickname: "{{ current_nickname }}"
-          userPrincipalName: "{{ current_nickname }}@{{ domain_name }}"
+          mailNickname: "{{ selected_username.split('@')[0] }}"
+          userPrincipalName: "{{ selected_username }}"
           passwordProfile:
             forceChangePasswordNextSignIn: true
             password: "Default@1234"
