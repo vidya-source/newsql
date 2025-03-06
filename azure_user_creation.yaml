@@ -14,7 +14,8 @@
     default_mail_nickname: "vidya"
     domain_name: "amitomar63gmail.onmicrosoft.com"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    check_number: 3  # The specific number to check
+    start_number: 1    # Starting number to check
+    max_number: 100    # Maximum number to check
   tasks:
     - name: Get Azure access token
       uri:
@@ -33,38 +34,63 @@
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
 
-    # First, check the specified number
-    - name: Check if the specified username exists in Azure AD
-      uri:
-        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ check_number }}@{{ domain_name }}"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ access_token }}"
-          Content-Type: "application/json"
-        status_code: [200, 404]
-        return_content: yes
-      register: username_check
-      ignore_errors: yes
-      
-    - name: Debug check result
-      debug:
-        msg: "Checked {{ default_mail_nickname }}{{ check_number }} - Status: {{ username_check.status | default('error') }} (404 means available)"
-      
-    # Set the username based on the check
-    - name: Set username based on check
-      set_fact:
-        available_nickname: "{{ default_mail_nickname }}{{ check_number }}"
-        username_available: true
-      when: username_check.status is defined and username_check.status == 404
-      
-    - name: Set username unavailable flag
+    # Initialize variables
+    - name: Initialize username variables
       set_fact:
         username_available: false
-      when: username_check.status is defined and username_check.status != 404
+        available_nickname: ""
+        current_number: "{{ start_number }}"
 
-    - name: Debug - Selected username
+    # This task runs until an available username is found or max is reached
+    - name: Check username sequentially
+      block:
+        - name: Check if current username exists in Azure AD
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ current_number }}@{{ domain_name }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 404]
+            return_content: yes
+          register: username_check
+          ignore_errors: yes
+          
+        - name: Debug current check
+          debug:
+            msg: "Checking {{ default_mail_nickname }}{{ current_number }} - Status: {{ username_check.status | default('error') }}"
+          
+        # If username is available, set flag and name
+        - name: Set username if available
+          set_fact:
+            username_available: true
+            available_nickname: "{{ default_mail_nickname }}{{ current_number }}"
+          when: username_check.status is defined and username_check.status == 404
+          
+        # If not available, increment counter
+        - name: Increment counter if username not available
+          set_fact:
+            current_number: "{{ current_number | int + 1 }}"
+          when: 
+            - not username_available
+            - username_check.status is defined 
+            - username_check.status == 200
+            - current_number | int < max_number
+      # Use register/until to control the loop
+      register: check_result
+      until: username_available or current_number | int > max_number
+      # Retry enough times to check all numbers from start to max
+      retries: "{{ max_number - start_number + 1 }}"
+      delay: 1
+      
+    - name: Debug - Final result
       debug:
-        msg: "Username {{ available_nickname | default('none') }}@{{ domain_name }} is {% if username_available | default(false) %}available{% else %}not available{% endif %}"
+        msg: >
+          {% if username_available %}
+          Found available username: {{ available_nickname }}@{{ domain_name }}
+          {% else %}
+          No available username found after checking {{ current_number | int - 1 }} options
+          {% endif %}
 
     # Create user only if username is available
     - name: Create User in Azure AD with available username
@@ -85,4 +111,4 @@
         body_format: json
         status_code: [201]
       register: user_creation
-      when: username_available | default(false)
+      when: username_available
