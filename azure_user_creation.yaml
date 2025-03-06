@@ -10,9 +10,10 @@
     client_secret: "{{ azure_client_secret }}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
     default_user_email: "{{ awx_webhook_payload.user_email }}"
-    default_user_name: "{{ awx_webhook_payload.user_name}}"
-    default_mail_nickname: "{{ awx_webhook_payload.nickname}}"
+    default_user_name: "{{ awx_webhook_payload.user_name }}"
+    default_mail_nickname: "{{ awx_webhook_payload.nickname }}"
     domain_name: "amitomar63gmail.onmicrosoft.com"
+
   tasks:
     - name: Get Azure access token
       uri:
@@ -30,13 +31,13 @@
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-    
+
     - name: Initialize variables for user creation
       set_fact:
         current_nickname: "{{ default_mail_nickname }}"
         suffix_count: 0
         user_found: true
-    
+
     - name: Check if original user exists in Azure AD
       uri:
         url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
@@ -48,47 +49,48 @@
         return_content: yes
       register: user_check
       ignore_errors: yes
-    
+
     - name: Set user exists flag
       set_fact:
         user_exists: "{{ user_check.status == 200 }}"
-    
+
     - name: Find available username when original exists
-      block:
-        - name: Increment suffix counter
-          set_fact:
-            suffix_count: "{{ suffix_count | int + 1 }}"
-            current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int + 1 }}"
-        
-        - name: Check if incremented username exists
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: incremented_user_check
-          ignore_errors: yes
-        
-        - name: Set user exists flag based on current check
-          set_fact:
-            user_exists: "{{ incremented_user_check.status == 200 }}"
-        
-        - name: Debug - Current attempt
-          debug:
-            msg: "Checking username: {{ current_nickname }}@{{ domain_name }} (Attempt {{ suffix_count }})"
       when: user_exists
-      loop: "{{ range(100) | list }}"
-      loop_control:
-        pause: 1
-      until: not user_exists
-    
+      block:
+        - name: Loop to find available username
+          until: not user_exists
+          retries: 100
+          delay: 1
+          block:
+            - name: Increment suffix counter
+              set_fact:
+                suffix_count: "{{ suffix_count | int + 1 }}"
+                current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int + 1 }}"
+
+            - name: Check if incremented username exists
+              uri:
+                url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+                method: GET
+                headers:
+                  Authorization: "Bearer {{ access_token }}"
+                  Content-Type: "application/json"
+                status_code: [200, 404]
+                return_content: yes
+              register: incremented_user_check
+              ignore_errors: yes
+
+            - name: Set user exists flag based on current check
+              set_fact:
+                user_exists: "{{ incremented_user_check.status == 200 }}"
+
+            - name: Debug - Current attempt
+              debug:
+                msg: "Checking username: {{ current_nickname }}@{{ domain_name }} (Attempt {{ suffix_count }})"
+
     - name: Debug - Final username selection
       debug:
         msg: "Selected username: {{ current_nickname }}@{{ domain_name }}"
-    
+
     - name: Create User in Azure AD with available username
       uri:
         url: "{{ graph_api_endpoint }}/users"
