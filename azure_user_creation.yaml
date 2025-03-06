@@ -52,47 +52,46 @@
       set_fact:
         user_available: "{{ original_check.status == 404 }}"
 
-    # If original username is not available, start incremental checks
-    - name: Initialize incremental check
+    # Start an incremental search if original is not available
+    - name: Increment suffix count
       set_fact:
-        checking_name: true
+        suffix_count: "{{ suffix_count | int + 1 }}"
+        current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
       when: not user_available
 
-    # This task will run until an available username is found
-    - name: Find available username through incremental suffixes
-      block:
-        - name: Increment suffix count
-          set_fact:
-            suffix_count: "{{ suffix_count | int + 1 }}"
-            current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
-
-        - name: Check if incremented username exists
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: incremented_check
-          ignore_errors: yes
-
-        - name: Update availability flag
-          set_fact:
-            user_available: "{{ incremented_check.status == 404 }}"
-            checking_name: "{{ incremented_check.status != 404 }}"
-
-        - name: Debug - Current username check
-          debug:
-            msg: "Checked: {{ current_nickname }}@{{ domain_name }} - Available: {{ user_available }}"
-      when: checking_name | bool
-      register: incremental_result
-      # Repeat until available username is found (effectively infinite)
-      until: user_available | bool
-      # This is effectively "infinite" - retry 9999 times
+    # Use a task with until to keep trying incremented usernames
+    - name: Check if incremented username exists
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: incremented_check
+      ignore_errors: yes
+      when: not user_available
+      until: incremented_check.status == 404
       retries: 9999
       delay: 1
+
+    # After each check, if not available, increment the counter for next iteration
+    - name: Increment for next iteration
+      set_fact:
+        suffix_count: "{{ suffix_count | int + 1 }}"
+        current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
+      when: not user_available and incremented_check.status == 200
+      until: incremented_check.status == 404
+      retries: 9999
+      delay: 1
+
+    # Once available username is found, update the flag
+    - name: Update availability flag
+      set_fact:
+        user_available: true
+        current_nickname: "{{ current_nickname }}"
+      when: not user_available and incremented_check.status == 404
 
     - name: Debug - Final username selection
       debug:
