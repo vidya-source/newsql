@@ -5,15 +5,13 @@
     servicenow_instance: "https://dev247928.service-now.com"
     servicenow_username: "{{ service_now_username }}"
     servicenow_password: "{{ service_now_password }}"
-    tenant_id: "{{ tenant_id }}"
-    client_id: "{{ client_id }}"
-    client_secret: "{{ client_secret }}"
+    tenant_id: "{{ azure_tenant_id }}"
+    client_id: "{{ azure_client_id }}"
+    client_secret: "{{ azure_client_secret }}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    default_user_email: "vidya@gmail.com"
+    default_user_email: "vidya@domain.com"
     default_user_name: "VidyaRa"
     default_mail_nickname: "vidya"
-    domain_name: "amitomar63gmail.onmicrosoft.com"
-
   tasks:
     - name: Get Azure access token
       uri:
@@ -27,77 +25,28 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
-
+      
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-        suffix_count: 0
-        current_nickname: "{{ default_mail_nickname }}"
-        user_available: false
-
-    # First check if the original username is available
-    - name: Check if original user exists in Azure AD
+        
+    - name: Check if user exists in Azure AD
       uri:
-        url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
         method: GET
         headers:
           Authorization: "Bearer {{ access_token }}"
           Content-Type: "application/json"
         status_code: [200, 404]
         return_content: yes
-      register: original_check
+      register: user_check
       ignore_errors: yes
-
-    - name: Set availability flag for original username
-      set_fact:
-        user_available: "{{ original_check.status == 404 }}"
-
-    # Start an incremental search if original is not available
-    - name: Increment suffix count
-      set_fact:
-        suffix_count: "{{ suffix_count | int + 1 }}"
-        current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
-      when: not user_available
-
-    # Use a task with until to keep trying incremented usernames
-    - name: Check if incremented username exists
-      uri:
-        url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
-        method: GET
-        headers:
-          Authorization: "Bearer {{ access_token }}"
-          Content-Type: "application/json"
-        status_code: [200, 404]
-        return_content: yes
-      register: incremented_check
-      ignore_errors: yes
-      when: not user_available
-      until: incremented_check.status == 404
-      retries: 9999
-      delay: 1
-
-    # After each check, if not available, increment the counter for next iteration
-    - name: Increment for next iteration
-      set_fact:
-        suffix_count: "{{ suffix_count | int + 1 }}"
-        current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
-      when: not user_available and incremented_check.status == 200
-      until: incremented_check.status == 404
-      retries: 9999
-      delay: 1
-
-    # Once available username is found, update the flag
-    - name: Update availability flag
-      set_fact:
-        user_available: true
-        current_nickname: "{{ current_nickname }}"
-      when: not user_available and incremented_check.status == 404
-
-    - name: Debug - Final username selection
+      
+    - name: Debug - Show User Check Results
       debug:
-        msg: "Selected username: {{ current_nickname }}@{{ domain_name }}"
-
-    - name: Create User in Azure AD with available username
+        var: user_check
+        
+    - name: Create User in Azure AD if Not Exists
       uri:
         url: "{{ graph_api_endpoint }}/users"
         method: POST
@@ -107,11 +56,73 @@
         body:
           accountEnabled: true
           displayName: "{{ default_user_name }}"
-          mailNickname: "{{ current_nickname }}"
-          userPrincipalName: "{{ current_nickname }}@{{ domain_name }}"
+          mailNickname: "{{ default_mail_nickname }}"
+          userPrincipalName: "{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
           passwordProfile:
             forceChangePasswordNextSignIn: true
             password: "Default@1234"
         body_format: json
         status_code: [201]
       register: user_creation
+      when: user_check.status == 404
+      
+    # Handle the case where user already exists
+    - name: Set initial counter for duplicate username
+      set_fact:
+        username_counter: 1
+        available_username_found: false
+      when: user_check.status == 200
+      
+    - name: Find available username with incrementing counter
+      block:
+        - name: Check if modified username exists
+          uri:
+            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ username_counter }}@amitomar63gmail.onmicrosoft.com"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 404]
+            return_content: yes
+          register: modified_user_check
+          ignore_errors: yes
+          
+        - name: Set available username found flag if available
+          set_fact:
+            available_username_found: true
+          when: modified_user_check.status == 404
+          
+        - name: Increment counter if user exists
+          set_fact:
+            username_counter: "{{ username_counter | int + 1 }}"
+          when: modified_user_check.status == 200
+      when: user_check.status == 200 and not available_username_found
+      until: available_username_found
+      # No retries limit - will keep going until available username is found
+      retries: 9999
+      delay: 1
+      
+    - name: Create User with modified username
+      uri:
+        url: "{{ graph_api_endpoint }}/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        body:
+          accountEnabled: true
+          displayName: "{{ default_user_name }}"
+          mailNickname: "{{ default_mail_nickname }}{{ username_counter }}"
+          userPrincipalName: "{{ default_mail_nickname }}{{ username_counter }}@amitomar63gmail.onmicrosoft.com"
+          passwordProfile:
+            forceChangePasswordNextSignIn: true
+            password: "Default@1234"
+        body_format: json
+        status_code: [201]
+      register: modified_user_creation
+      when: user_check.status == 200 and available_username_found
+      
+    - name: Debug - Show Modified User Creation Results
+      debug:
+        var: modified_user_creation
+      when: user_check.status == 200 and available_username_found
