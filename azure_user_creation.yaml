@@ -36,7 +36,7 @@
       set_fact:
         current_nickname: "{{ default_mail_nickname }}"
         suffix_count: 0
-        user_found: true
+        user_exists: false  # Assume the user does not exist initially
 
     - name: Check if original user exists in Azure AD
       uri:
@@ -54,20 +54,18 @@
       set_fact:
         user_exists: "{{ user_check.status == 200 }}"
 
-    - name: Find available username when original exists
+    - name: Find available username if original exists
       when: user_exists
       block:
-        - name: Loop to find available username
-          until: not user_exists
-          retries: 100
-          delay: 1
-          block:
+        - name: Loop until an available username is found
+          while: user_exists
+          tasks:
             - name: Increment suffix counter
               set_fact:
                 suffix_count: "{{ suffix_count | int + 1 }}"
-                current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int + 1 }}"
+                current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
 
-            - name: Check if incremented username exists
+            - name: Check if new username exists in Azure AD
               uri:
                 url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
                 method: GET
@@ -79,7 +77,7 @@
               register: incremented_user_check
               ignore_errors: yes
 
-            - name: Set user exists flag based on current check
+            - name: Update user_exists flag
               set_fact:
                 user_exists: "{{ incremented_user_check.status == 200 }}"
 
