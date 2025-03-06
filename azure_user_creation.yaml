@@ -1,22 +1,26 @@
-- name: Fetch Pending ServiceNow Requests
+- name: Azure User Creation with First Available Username
   hosts: localhost
   gather_facts: no
   vars:
-    servicenow_instance: "https://dev247928.service-now.com"
-    servicenow_username: "admin"
-    servicenow_password: "%ml4Vs9RXE/s"
-    servicenow_table: "sc_request"
+    # Service credentials
     tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
     client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
     client_secret: "PQZ8Q~XSmMsU4dbgk2KyWMHK1h8X7ciD~H.1_csi"
-    default_user_email: "vidya@domain.com"
+    
+    # User details
     default_user_name: "VidyaRa"
     default_mail_nickname: "vidya"
     domain_name: "amitomar63gmail.onmicrosoft.com"
+    
+    # API endpoints
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    start_number: 1    # Starting number to check
-    max_number: 100    # Maximum number to check
+    
+    # Search range
+    start_number: 1
+    max_number: 100
+    
   tasks:
+    # Get the Azure auth token
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -33,89 +37,90 @@
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-        current_number: "{{ start_number }}"
-        username_available: false
-        available_nickname: ""
+    
+    # Custom script that does everything in one task
+    - name: Find first available username and create user
+      shell: |
+        #!/bin/bash
+        # Script to find first available username and create Azure AD user
         
-    # Use a task within a meta loop to break when username found
-    - name: Find first available username
-      block:
-        - name: Check if username exists in Azure AD
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ current_number }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: username_check
-          ignore_errors: yes
+        # Variables
+        ACCESS_TOKEN="{{ access_token }}"
+        BASE_NAME="{{ default_mail_nickname }}"
+        DOMAIN="{{ domain_name }}"
+        DISPLAY_NAME="{{ default_user_name }}"
+        START_NUM={{ start_number }}
+        MAX_NUM={{ max_number }}
+        GRAPH_API="{{ graph_api_endpoint }}"
+        
+        # Function to check if username exists
+        check_username() {
+          local num=$1
+          local username="${BASE_NAME}${num}@${DOMAIN}"
           
-        - name: Debug current check
-          debug:
-            msg: "Checking {{ default_mail_nickname }}{{ current_number }} - Status: {{ username_check.status | default('error') }}"
+          # Make API call to check if user exists
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            "${GRAPH_API}/users/${username}")
           
-        # If username is available, set flag and name
-        - name: Set username if available
-          set_fact:
-            username_available: true
-            available_nickname: "{{ default_mail_nickname }}{{ current_number }}"
-          when: username_check.status is defined and username_check.status == 404
+          echo "Checking ${username} - Status: ${status_code}"
           
-        # Break out of the loop if username found
-        - name: Exit loop if username available
-          meta: end_play
-          when: username_available
+          # Return true (0) if username is available (404), false (1) otherwise
+          if [ "$status_code" == "404" ]; then
+            return 0
+          else
+            return 1
+          fi
+        }
+        
+        # Function to create user
+        create_user() {
+          local nickname=$1
+          local username="${nickname}@${DOMAIN}"
           
-        # Increment the counter for the next iteration
-        - name: Increment counter for next check
-          set_fact:
-            current_number: "{{ current_number | int + 1 }}"
-            
-        # Exit if we've reached the maximum
-        - name: Exit if maximum number reached
-          meta: end_play
-          when: current_number | int > max_number
+          # Create JSON payload
+          json_payload=$(cat <<EOF
+        {
+          "accountEnabled": true,
+          "displayName": "${DISPLAY_NAME}",
+          "mailNickname": "${nickname}",
+          "userPrincipalName": "${username}",
+          "passwordProfile": {
+            "forceChangePasswordNextSignIn": true,
+            "password": "Default@1234"
+          }
+        }
+        EOF
+        )
           
-      # Repeat the block until we hit a meta end_play
-      until: current_number | int > max_number
-      retries: "{{ max_number - start_number }}"
-      delay: 1
+          # Make API call to create user
+          response=$(curl -s \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$json_payload" \
+            -X POST \
+            "${GRAPH_API}/users")
+          
+          echo "User creation response: $response"
+          echo "AVAILABLE_USERNAME=${username}" > /tmp/username_result.txt
+        }
+        
+        # Main loop to find available username
+        for ((i=${START_NUM}; i<=${MAX_NUM}; i++)); do
+          if check_username $i; then
+            echo "Found available username: ${BASE_NAME}${i}@${DOMAIN}"
+            create_user "${BASE_NAME}${i}"
+            exit 0
+          fi
+        done
+        
+        echo "No available username found after checking ${MAX_NUM} options"
+        exit 1
+      args:
+        executable: /bin/bash
+      register: username_search_result
       
-    # This will only run if no username was found
-    - name: Debug - No username found
+    - name: Debug script result
       debug:
-        msg: "No available username found after checking {{ max_number }} options"
-      when: not username_available
-
-    # Create user only if username is available - this runs in a separate play
-  
-- name: Create user if available username was found
-  hosts: localhost
-  gather_facts: no
-  tasks:
-    - name: Create User in Azure AD
-      uri:
-        url: "{{ graph_api_endpoint }}/users"
-        method: POST
-        headers:
-          Authorization: "Bearer {{ access_token }}"
-          Content-Type: "application/json"
-        body:
-          accountEnabled: true
-          displayName: "{{ default_user_name }}"
-          mailNickname: "{{ available_nickname }}"
-          userPrincipalName: "{{ available_nickname }}@{{ domain_name }}"
-          passwordProfile:
-            forceChangePasswordNextSignIn: true
-            password: "Default@1234"
-        body_format: json
-        status_code: [201]
-      register: user_creation
-      when: username_available
-      
-    - name: Debug - User creation result
-      debug:
-        msg: "Successfully created user: {{ available_nickname }}@{{ domain_name }}"
-      when: username_available and user_creation.status == 201
+        msg: "{{ username_search_result.stdout_lines }}"
