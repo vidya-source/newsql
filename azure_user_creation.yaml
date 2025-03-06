@@ -1,4 +1,4 @@
-- name: Fetch Pending ServiceNow Requests
+- name: Azure AD User Creation
   hosts: localhost
   gather_facts: no
   vars:
@@ -14,7 +14,7 @@
     default_mail_nickname: "vidya"
     domain_name: "amitomar63gmail.onmicrosoft.com"
     user_number: 100  # Maximum number of attempts for unique username
-
+    graph_api_endpoint: "https://graph.microsoft.com/v1.0"  # Added missing variable
   tasks:
     - name: Get Azure access token
       uri:
@@ -48,30 +48,42 @@
     - name: Set initial username
       set_fact:
         current_nickname: "{{ default_mail_nickname }}"
-      when: user_check.status != 200
+      when: user_check.status_code != 200  # Fixed: Using status_code instead of status
 
     - name: Find available username if original exists
-      when: user_check.status == 200
+      when: user_check.status_code == 200  # Fixed: Using status_code instead of status
       block:
-        - name: Check available usernames with sequence
+        - name: Initialize unique username finder
           set_fact:
-            current_nickname: "{{ default_mail_nickname }}{{ item }}"
-          with_sequence: "start=1 end={{ user_number }}"
+            username_found: false
+            current_nickname: "{{ default_mail_nickname }}"
 
-        - name: Verify if new username is available
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: incremented_user_check
-          ignore_errors: yes
-          until: incremented_user_check.status == 404
-          retries: 1
-          delay: 1
+        - name: Try different usernames
+          block:
+            - name: Set incremented username
+              set_fact:
+                current_nickname: "{{ default_mail_nickname }}{{ item }}"
+
+            - name: Verify if new username is available
+              uri:
+                url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+                method: GET
+                headers:
+                  Authorization: "Bearer {{ access_token }}"
+                  Content-Type: "application/json"
+                status_code: [200, 404]
+                return_content: yes
+              register: incremented_user_check
+              ignore_errors: yes
+
+            - name: Mark username as found if available
+              set_fact:
+                username_found: true
+              when: incremented_user_check.status_code == 404
+          with_sequence: "start=1 end={{ user_number }}"
+          loop_control:
+            label: "{{ current_nickname }}"
+          when: not username_found
 
         - name: Debug - Selected username
           debug:
@@ -95,3 +107,8 @@
         body_format: json
         status_code: [201]
       register: user_creation
+
+    - name: Display created user information
+      debug:
+        msg: "User created: {{ current_nickname }}@{{ domain_name }}"
+      when: user_creation.status_code == 201
