@@ -13,7 +13,6 @@
     default_user_name: "{{ awx_webhook_payload.user_name}}"
     default_mail_nickname: "{{ awx_webhook_payload.nickname}}"
     domain_name: "amitomar63gmail.onmicrosoft.com"
-    max_iterations: 10  # Maximum number of attempts to find a unique username
   tasks:
     - name: Get Azure access token
       uri:
@@ -38,9 +37,30 @@
         suffix_count: 0
         user_found: true
     
-    - name: Find available username
+    - name: Check if original user exists in Azure AD
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check
+      ignore_errors: yes
+    
+    - name: Set user exists flag
+      set_fact:
+        user_exists: "{{ user_check.status == 200 }}"
+    
+    - name: Find available username when original exists
       block:
-        - name: Check if user exists in Azure AD
+        - name: Increment suffix counter
+          set_fact:
+            suffix_count: "{{ suffix_count | int + 1 }}"
+            current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int + 1 }}"
+        
+        - name: Check if incremented username exists
           uri:
             url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
             method: GET
@@ -49,31 +69,21 @@
               Content-Type: "application/json"
             status_code: [200, 404]
             return_content: yes
-          register: user_check
+          register: incremented_user_check
           ignore_errors: yes
         
-        - name: Set user_found flag based on HTTP status
+        - name: Set user exists flag based on current check
           set_fact:
-            user_found: "{{ user_check.status == 200 }}"
-        
-        - name: Increment suffix and update nickname if user exists
-          set_fact:
-            suffix_count: "{{ suffix_count | int + 1 }}"
-            current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int + 1 }}"
-          when: user_found
+            user_exists: "{{ incremented_user_check.status == 200 }}"
         
         - name: Debug - Current attempt
           debug:
             msg: "Checking username: {{ current_nickname }}@{{ domain_name }} (Attempt {{ suffix_count }})"
-          when: user_found
-      rescue:
-        - name: Handle API errors
-          debug:
-            msg: "Error occurred while checking username: {{ current_nickname }}"
-      
-      until: not user_found or suffix_count >= max_iterations
-      retries: "{{ max_iterations }}"
-      delay: 1
+      when: user_exists
+      loop: "{{ range(100) | list }}"
+      loop_control:
+        pause: 1
+      until: not user_exists
     
     - name: Debug - Final username selection
       debug:
@@ -97,9 +107,3 @@
         body_format: json
         status_code: [201]
       register: user_creation
-      when: suffix_count < max_iterations
-    
-    - name: Notify if maximum iterations reached without creating user
-      debug:
-        msg: "Failed to find available username after {{ max_iterations }} attempts"
-      when: suffix_count >= max_iterations
