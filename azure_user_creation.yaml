@@ -32,62 +32,129 @@
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
 
-    - name: Initialize variables for user creation
-      set_fact:
-        current_nickname: "{{ default_mail_nickname }}"
-        suffix_count: 0
-        user_exists: false  # Assume the user does not exist initially
-
+    # Check original username
     - name: Check if original user exists in Azure AD
       uri:
-        url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@{{ domain_name }}"
         method: GET
         headers:
           Authorization: "Bearer {{ access_token }}"
           Content-Type: "application/json"
         status_code: [200, 404]
         return_content: yes
-      register: user_check
+      register: original_user_check
       ignore_errors: yes
 
-    - name: Set user exists flag
+    # Set appropriate nickname based on original check
+    - name: Set original nickname if user doesn't exist
       set_fact:
-        user_exists: "{{ user_check.status == 200 }}"
+        current_nickname: "{{ default_mail_nickname }}"
+        username_found: true
+      when: original_user_check.status == 404
 
-    - name: Find available username if original exists
-      when: user_exists
-      block:
-        - name: Loop until an available username is found
-          while: user_exists
-          tasks:
-            - name: Increment suffix counter
-              set_fact:
-                suffix_count: "{{ suffix_count | int + 1 }}"
-                current_nickname: "{{ default_mail_nickname }}{{ suffix_count | int }}"
+    # Check username1 if original exists
+    - name: Check username1
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}1@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check1
+      ignore_errors: yes
+      when: original_user_check.status == 200
 
-            - name: Check if new username exists in Azure AD
-              uri:
-                url: "{{ graph_api_endpoint }}/users/{{ current_nickname }}@{{ domain_name }}"
-                method: GET
-                headers:
-                  Authorization: "Bearer {{ access_token }}"
-                  Content-Type: "application/json"
-                status_code: [200, 404]
-                return_content: yes
-              register: incremented_user_check
-              ignore_errors: yes
+    - name: Set nickname to username1
+      set_fact:
+        current_nickname: "{{ default_mail_nickname }}1"
+        username_found: true
+      when: original_user_check.status == 200 and user_check1.status == 404
 
-            - name: Update user_exists flag
-              set_fact:
-                user_exists: "{{ incremented_user_check.status == 200 }}"
+    # Check username2 if username1 exists
+    - name: Check username2
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}2@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check2
+      ignore_errors: yes
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200
 
-            - name: Debug - Current attempt
-              debug:
-                msg: "Checking username: {{ current_nickname }}@{{ domain_name }} (Attempt {{ suffix_count }})"
+    - name: Set nickname to username2
+      set_fact:
+        current_nickname: "{{ default_mail_nickname }}2"
+        username_found: true
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2.status == 404
+
+    # Check username3 if username2 exists
+    - name: Check username3
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}3@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check3
+      ignore_errors: yes
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2 is defined and user_check2.status == 200
+
+    - name: Set nickname to username3
+      set_fact:
+        current_nickname: "{{ default_mail_nickname }}3"
+        username_found: true
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2 is defined and user_check2.status == 200 and user_check3.status == 404
+
+    # Check username4 if username3 exists
+    - name: Check username4
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}4@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check4
+      ignore_errors: yes
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2 is defined and user_check2.status == 200 and user_check3 is defined and user_check3.status == 200
+
+    - name: Set nickname to username4
+      set_fact:
+        current_nickname: "{{ default_mail_nickname }}4"
+        username_found: true
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2 is defined and user_check2.status == 200 and user_check3 is defined and user_check3.status == 200 and user_check4.status == 404
+
+    # Check username5 if username4 exists
+    - name: Check username5
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}5@{{ domain_name }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check5
+      ignore_errors: yes
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2 is defined and user_check2.status == 200 and user_check3 is defined and user_check3.status == 200 and user_check4 is defined and user_check4.status == 200
+
+    - name: Set nickname to username5
+      set_fact:
+        current_nickname: "{{ default_mail_nickname }}5"
+        username_found: true
+      when: original_user_check.status == 200 and user_check1 is defined and user_check1.status == 200 and user_check2 is defined and user_check2.status == 200 and user_check3 is defined and user_check3.status == 200 and user_check4 is defined and user_check4.status == 200 and user_check5.status == 404
 
     - name: Debug - Final username selection
       debug:
-        msg: "Selected username: {{ current_nickname }}@{{ domain_name }}"
+        msg: "Selected username: {{ current_nickname | default(default_mail_nickname) }}@{{ domain_name }}"
 
     - name: Create User in Azure AD with available username
       uri:
@@ -99,11 +166,12 @@
         body:
           accountEnabled: true
           displayName: "{{ default_user_name }}"
-          mailNickname: "{{ current_nickname }}"
-          userPrincipalName: "{{ current_nickname }}@{{ domain_name }}"
+          mailNickname: "{{ current_nickname | default(default_mail_nickname) }}"
+          userPrincipalName: "{{ current_nickname | default(default_mail_nickname) }}@{{ domain_name }}"
           passwordProfile:
             forceChangePasswordNextSignIn: true
             password: "Default@1234"
         body_format: json
         status_code: [201]
       register: user_creation
+      when: username_found is defined
