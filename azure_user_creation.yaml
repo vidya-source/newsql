@@ -14,7 +14,7 @@
     default_mail_nickname: "vidya"
     domain_name: "amitomar63gmail.onmicrosoft.com"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    max_attempts: 100  # Maximum attempts for unique username
+    check_number: 3  # The specific number to check
   tasks:
     - name: Get Azure access token
       uri:
@@ -33,58 +33,40 @@
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
 
-    # First check if the default username is available
-    - name: Check if default username exists in Azure AD
+    # First, check the specified number
+    - name: Check if the specified username exists in Azure AD
       uri:
-        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@{{ domain_name }}"
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ check_number }}@{{ domain_name }}"
         method: GET
         headers:
           Authorization: "Bearer {{ access_token }}"
           Content-Type: "application/json"
         status_code: [200, 404]
         return_content: yes
-      register: default_user_check
+      register: username_check
       ignore_errors: yes
-
-    # Use default if available, otherwise set available_nickname later
-    - name: Set username variables
+      
+    - name: Debug check result
+      debug:
+        msg: "Checked {{ default_mail_nickname }}{{ check_number }} - Status: {{ username_check.status | default('error') }} (404 means available)"
+      
+    # Set the username based on the check
+    - name: Set username based on check
       set_fact:
-        available_nickname: "{% if default_user_check.status is defined and default_user_check.status == 404 %}{{ default_mail_nickname }}{% else %}not_set_yet{% endif %}"
-
-    # Only run this section if default username is not available
-    - name: Find available alternative username
-      block:
-        - name: Check username with number
-          uri:
-            url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}{{ item }}@{{ domain_name }}"
-            method: GET
-            headers:
-              Authorization: "Bearer {{ access_token }}"
-              Content-Type: "application/json"
-            status_code: [200, 404]
-            return_content: yes
-          register: username_result
-          ignore_errors: yes
-          with_sequence: start=1 end=10  # Try first 10 numbers
-          when: available_nickname == "not_set_yet"
-        
-        - name: Set available nickname from results
-          set_fact:
-            available_nickname: "{{ default_mail_nickname }}{{ item.item }}"
-          with_items: "{{ username_result.results }}"
-          when: 
-            - available_nickname == "not_set_yet"
-            - item.status is defined 
-            - item.status == 404
-          loop_control:
-            label: "{{ default_mail_nickname }}{{ item.item }}"
-          run_once: true
-      when: default_user_check.status is defined and default_user_check.status == 200
+        available_nickname: "{{ default_mail_nickname }}{{ check_number }}"
+        username_available: true
+      when: username_check.status is defined and username_check.status == 404
+      
+    - name: Set username unavailable flag
+      set_fact:
+        username_available: false
+      when: username_check.status is defined and username_check.status != 404
 
     - name: Debug - Selected username
       debug:
-        msg: "Selected username: {{ available_nickname }}@{{ domain_name }}"
+        msg: "Username {{ available_nickname | default('none') }}@{{ domain_name }} is {% if username_available | default(false) %}available{% else %}not available{% endif %}"
 
+    # Create user only if username is available
     - name: Create User in Azure AD with available username
       uri:
         url: "{{ graph_api_endpoint }}/users"
@@ -103,4 +85,4 @@
         body_format: json
         status_code: [201]
       register: user_creation
-      when: available_nickname != "not_set_yet"
+      when: username_available | default(false)
