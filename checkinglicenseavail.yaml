@@ -4,46 +4,18 @@
   gather_facts: no
   vars:
     servicenow_instance: "https://dev247928.service-now.com"
-    servicenow_username: "admin"
-    servicenow_password: "%ml4Vs9RXE/s"
-    servicenow_table: "sc_request"
-    tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
-    client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
-    client_secret: "PQZ8Q~XSmMsU4dbgk2KyWMHK1h8X7ciD~H.1_csi"
+    servicenow_username: "{{ service_now_username }}"
+    servicenow_password: "{{ service_now_password }}"
+    tenant_id: "{{ azure_tenant_id }}"
+    client_id: "{{ azure_client_id }}"
+    client_secret: "{{ azure_client_secret }}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    
+    default_user_email: "{{ awx_webhook_payload.user_email }}"
+    default_user_name: "{{ awx_webhook_payload.user_name}}"
+    default_mail_nickname: "{{ awx_webhook_payload.nickname}}"
+    request_sys_id: "{{ awx_webhook_payload.request_sys_id }}"
+    ritm_sys_id: "{{ awx_webhook_payload.ritm_sys_id }}"
   tasks:
-    - name: Fetch pending requests from ServiceNow
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/{{ servicenow_table }}?sysparm_query=request_state=requested"
-        method: GET
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        return_content: yes
-      register: servicenow_response
-
-    - name: Store Requested License Type
-      set_fact:
-        requested_license_map: >-
-          {{
-            servicenow_response.json.result |
-            items2dict(key_name='sys_id', value_name='short_description')
-          }}
-
-    - name: Display request details
-      debug:
-        msg: |
-          {% for request in servicenow_response.json.result %}
-          Request Number: {{ request.get('number', 'N/A') }}
-          Sys ID: {{ request.get('sys_id', 'N/A') }}
-          User ID (Requested For): {{ request.get('requested_for', {}).get('value', 'Unknown') }}
-          User ID (Opened By): {{ request.get('opened_by', {}).get('value', 'Unknown') }}
-          Requested License Type: {{ request.get('short_description', 'Not Provided') }}
-          Description: {{ request.get('description', 'Not Provided') }}
-          ------------------------------------------------
-          {% endfor %}
-
     - name: Get Azure access token
       uri:
         url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
@@ -56,37 +28,100 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
-
+      
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-
-    - name: Check License Availability in Azure
+        
+    - name: Check if user exists in Azure AD
       uri:
-        url: "{{ graph_api_endpoint }}/subscribedSkus"
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
         method: GET
         headers:
           Authorization: "Bearer {{ access_token }}"
           Content-Type: "application/json"
+        status_code: [200, 404]
         return_content: yes
-      register: azure_license_response
-
-    - name: Add dummy license data for testing (remove this after u have real lic)
-      set_fact:
-        azure_license_response:
-          json:
-            value:
-              - id: "dummy-license-1"
-                skuPartNumber: "TEST_LICENSE_1"
-                prepaidUnits:
-                  enabled: 5
-                consumedUnits: 3
-              - id: "dummy-license-2"
-                skuPartNumber: "TEST_LICENSE_2"
-                prepaidUnits:
-                  enabled: 10
-                consumedUnits: 10
-
-    - name: Display license availability
+      register: user_check
+      ignore_errors: yes
+      
+    - name: Debug - Show User Check Results
       debug:
-        msg: "Available Licenses: {{ azure_license_response.json }}"
+        var: user_check
+        
+    - name: Create User in Azure AD if Not Exists
+      uri:
+        url: "{{ graph_api_endpoint }}/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        body:
+          accountEnabled: true
+          displayName: "{{ default_user_name }}"
+          mailNickname: "{{ default_mail_nickname }}"
+          userPrincipalName: "{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+          passwordProfile:
+            forceChangePasswordNextSignIn: true
+            password: "Default@1234"
+        body_format: json
+        status_code: [201]
+      register: user_creation
+      when: user_check.status == 404
+      
+    # Added workflow to update ServiceNow after successful user creation
+    - name: Set ServiceNow auth header
+      set_fact:
+        snow_auth: "{{ servicenow_username }}:{{ servicenow_password }}"
+      
+    - name: Update ServiceNow Request Item (RITM) status
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_req_item/{{ ritm_sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          stage: "completed"
+          state: "3"  # 3 corresponds to "Closed Complete" in ServiceNow
+        status_code: [200, 201]
+        return_content: yes
+      register: ritm_update_result
+      when: user_creation is defined and user_creation.skipped is not defined
+      
+    - name: Debug RITM update result
+      debug:
+        var: ritm_update_result
+      when: ritm_update_result is defined
+        
+    - name: Update ServiceNow Request status
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_request/{{ request_sys_id }}"
+        method: PATCH
+        user: "{{ servicenow_username }}"
+        password: "{{ servicenow_password }}"
+        force_basic_auth: yes
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          request_state: "closed_complete"  # Closed Complete state
+        status_code: [200, 201]
+        return_content: yes
+      register: request_update_result
+      when: user_creation is defined and user_creation.skipped is not defined
+      
+    - name: Debug Request update result
+      debug:
+        var: request_update_result
+      when: request_update_result is defined
+      
+    - name: Report success
+      debug:
+        msg: "User creation and ServiceNow update workflow completed successfully"
+      when: user_creation is defined and user_creation.skipped is not defined and ritm_update_result is defined and request_update_result is defined
