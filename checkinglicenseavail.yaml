@@ -10,11 +10,11 @@
     client_id: "{{ azure_client_id }}"
     client_secret: "{{ azure_client_secret }}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    default_user_email: "vidya1@gmail.com"
-    default_user_name: "vidya1"
-    default_mail_nickname: "vidya12"
-    request_sys_id: ""
-    ritm_sys_id: ""
+    default_user_email: "{{ awx_webhook_payload.user_email }}"
+    default_user_name: "{{ awx_webhook_payload.user_name }}"
+    default_mail_nickname: "{{ awx_webhook_payload.nickname }}"
+    requested_sys_id: "{{ awx_webhook_payload.sys_id }}"
+
   tasks:
     - name: Get Azure access token
       uri:
@@ -28,11 +28,11 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
-      
+
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-        
+
     - name: Check if user exists in Azure AD
       uri:
         url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
@@ -44,11 +44,11 @@
         return_content: yes
       register: user_check
       ignore_errors: yes
-      
+
     - name: Debug - Show User Check Results
       debug:
         var: user_check
-        
+
     - name: Create User in Azure AD if Not Exists
       uri:
         url: "{{ graph_api_endpoint }}/users"
@@ -68,60 +68,19 @@
         status_code: [201]
       register: user_creation
       when: user_check.status == 404
-      
-    # Added workflow to update ServiceNow after successful user creation
-    - name: Set ServiceNow auth header
-      set_fact:
-        snow_auth: "{{ servicenow_username }}:{{ servicenow_password }}"
-      
-    - name: Update ServiceNow Request Item (RITM) status
+
+    - name: Update ServiceNow Ticket with Correlation ID
       uri:
-        url: "{{ servicenow_instance }}/api/now/table/sc_req_item/{{ ritm_sys_id }}"
+        url: "{{ servicenow_instance }}/api/now/table/incident/{{ requested_sys_id }}"
         method: PATCH
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
         headers:
-          Content-Type: "application/json"
           Accept: "application/json"
-        body_format: json
-        body:
-          stage: "complete"
-          state: "3"  # 3 corresponds to "Closed Complete" in ServiceNow
-        status_code: [200, 201]
-        return_content: yes
-      register: ritm_update_result
-      when: user_creation is defined and user_creation.skipped is not defined
-      
-    - name: Debug RITM update result
-      debug:
-        var: ritm_update_result
-      when: ritm_update_result is defined
-        
-    - name: Update ServiceNow Request status
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/sc_request/{{ request_sys_id }}"
-        method: PATCH
-        user: "{{ servicenow_username }}"
-        password: "{{ servicenow_password }}"
-        force_basic_auth: yes
-        headers:
           Content-Type: "application/json"
-          Accept: "application/json"
-        body_format: json
+        auth:
+          - "{{ servicenow_username }}"
+          - "{{ servicenow_password }}"
         body:
-          request_state: "closed_complete"  # Closed Complete state
-        status_code: [200, 201]
-        return_content: yes
-      register: request_update_result
-      when: user_creation is defined and user_creation.skipped is not defined
-      
-    - name: Debug Request update result
-      debug:
-        var: request_update_result
-      when: request_update_result is defined
-      
-    - name: Report success
-      debug:
-        msg: "User creation and ServiceNow update workflow completed successfully"
-      when: user_creation is defined and user_creation.skipped is not defined and ritm_update_result is defined and request_update_result is defined
+          correlation_id: "true"
+        body_format: json
+        status_code: [200, 204]
+      when: user_creation is succeeded
