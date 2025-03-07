@@ -4,11 +4,11 @@
   gather_facts: no
   vars:
     servicenow_instance: "https://dev247928.service-now.com"
-    servicenow_username: "{{ service_now_username }}"
-    servicenow_password: "{{ service_now_password }}"
-    tenant_id: "{{ azure_tenant_id }}"
-    client_id: "{{ azure_client_id }}"
-    client_secret: "{{ azure_client_secret }}"
+    servicenow_username: "admin"
+    servicenow_password: "%ml4Vs9RXE/s"
+    tenant_id: "195e8969-c853-47b4-83d0-36e044d83923"
+    client_id: "e2e46ae3-2dee-4eed-a074-ddffd760ab2b"
+    client_secret: "PQZ8Q~XSmMsU4dbgk2KyWMHK1h8X7ciD~H.1_csi"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
     default_user_email: "vidyar@gmail.com"
     default_user_name: "vidyar"
