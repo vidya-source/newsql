@@ -10,10 +10,10 @@
     client_id: "{{ azure_client_id }}"
     client_secret: "{{ azure_client_secret }}"
     graph_api_endpoint: "https://graph.microsoft.com/v1.0"
-    default_user_email: "{{ awx_webhook_payload.user_email }}"
-    default_user_name: "{{ awx_webhook_payload.user_name }}"
-    default_mail_nickname: "{{ awx_webhook_payload.nickname }}"
-    requested_sys_id: "{{ awx_webhook_payload.sys_id }}"
+    default_user_email: "vidyar@gmail.com"
+    default_user_name: "vidyar"
+    default_mail_nickname: "vidyar"
+    requested_sys_id: "223a928b83c0a210d081f696feaad3f7"
   tasks:
     - name: Get Azure access token
       uri:
