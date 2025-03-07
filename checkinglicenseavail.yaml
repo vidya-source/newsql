@@ -13,9 +13,63 @@
     default_user_email: "{{ awx_webhook_payload.user_email }}"
     default_user_name: "{{ awx_webhook_payload.user_name}}"
     default_mail_nickname: "{{ awx_webhook_payload.nickname}}"
-    request_sys_id: "a9dd9bf283446210d081f696feaad3e6"
-    ritm_sys_id: "21dd9bf283446210d081f696feaad3e7"
+    request_sys_id: "{{ awx_webhook_payload.request_sys_id }}"
+    ritm_sys_id: "{{ awx_webhook_payload.ritm_sys_id }}"
   tasks:
+    - name: Get Azure access token
+      uri:
+        url: "https://login.microsoftonline.com/{{ tenant_id }}/oauth2/v2.0/token"
+        method: POST
+        body:
+          client_id: "{{ client_id }}"
+          client_secret: "{{ client_secret }}"
+          scope: "https://graph.microsoft.com/.default"
+          grant_type: "client_credentials"
+        body_format: form-urlencoded
+        return_content: yes
+      register: azure_auth_response
+      
+    - name: Set Azure token
+      set_fact:
+        access_token: "{{ azure_auth_response.json.access_token }}"
+        
+    - name: Check if user exists in Azure AD
+      uri:
+        url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        status_code: [200, 404]
+        return_content: yes
+      register: user_check
+      ignore_errors: yes
+      
+    - name: Debug - Show User Check Results
+      debug:
+        var: user_check
+        
+    - name: Create User in Azure AD if Not Exists
+      uri:
+        url: "{{ graph_api_endpoint }}/users"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ access_token }}"
+          Content-Type: "application/json"
+        body:
+          accountEnabled: true
+          displayName: "{{ default_user_name }}"
+          mailNickname: "{{ default_mail_nickname }}"
+          userPrincipalName: "{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+          passwordProfile:
+            forceChangePasswordNextSignIn: true
+            password: "Default@1234"
+        body_format: json
+        status_code: [201]
+      register: user_creation
+      when: user_check.status == 404
+      
+    # Added workflow to update ServiceNow after successful user creation
     - name: Set ServiceNow auth header
       set_fact:
         snow_auth: "{{ servicenow_username }}:{{ servicenow_password }}"
@@ -32,7 +86,7 @@
           Accept: "application/json"
         body_format: json
         body:
-          stage: "completed"
+          stage: "complete"
           state: "3"  # 3 corresponds to "Closed Complete" in ServiceNow
         status_code: [200, 201]
         return_content: yes
