@@ -14,7 +14,6 @@
     default_user_name: "{{ awx_webhook_payload.user_name }}"
     default_mail_nickname: "{{ awx_webhook_payload.nickname }}"
     requested_sys_id: "{{ awx_webhook_payload.sys_id }}"
-
   tasks:
     - name: Get Azure access token
       uri:
@@ -28,11 +27,11 @@
         body_format: form-urlencoded
         return_content: yes
       register: azure_auth_response
-
+    
     - name: Set Azure token
       set_fact:
         access_token: "{{ azure_auth_response.json.access_token }}"
-
+    
     - name: Check if user exists in Azure AD
       uri:
         url: "{{ graph_api_endpoint }}/users/{{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
@@ -44,11 +43,11 @@
         return_content: yes
       register: user_check
       ignore_errors: yes
-
+    
     - name: Debug - Show User Check Results
       debug:
         var: user_check
-
+    
     - name: Create User in Azure AD if Not Exists
       uri:
         url: "{{ graph_api_endpoint }}/users"
@@ -68,7 +67,7 @@
         status_code: [201]
       register: user_creation
       when: user_check.status == 404
-
+    
     - name: Update ServiceNow Ticket with Correlation ID
       uri:
         url: "{{ servicenow_instance }}/api/now/table/incident/{{ requested_sys_id }}"
@@ -83,4 +82,89 @@
           correlation_id: "true"
         body_format: json
         status_code: [200, 204]
-      when: user_creation is succeeded
+    
+    # New tasks to close the ServiceNow request after successful user creation
+    - name: Get Request Item information
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_req_item?sysparm_query=request.sys_id={{ requested_sys_id }}"
+        method: GET
+        headers:
+          Accept: "application/json"
+        auth:
+          - "{{ servicenow_username }}"
+          - "{{ servicenow_password }}"
+        return_content: yes
+      register: req_item_info
+      when: user_creation is defined and user_creation.status == 201
+    
+    - name: Debug - Request Item Information
+      debug:
+        var: req_item_info
+      when: user_creation is defined and user_creation.status == 201
+    
+    - name: Close Request Item in ServiceNow
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_req_item/{{ item.sys_id }}"
+        method: PATCH
+        headers:
+          Accept: "application/json"
+          Content-Type: "application/json"
+        auth:
+          - "{{ servicenow_username }}"
+          - "{{ servicenow_password }}"
+        body:
+          state: "3"  # 3 = Closed Complete
+          close_notes: "User successfully created in Azure AD with UPN: {{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com"
+        body_format: json
+        status_code: [200, 204]
+      with_items: "{{ req_item_info.json.result }}"
+      when: 
+        - user_creation is defined 
+        - user_creation.status == 201
+        - req_item_info.json.result | length > 0
+    
+    - name: Close the Request in ServiceNow
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sc_request/{{ requested_sys_id }}"
+        method: PATCH
+        headers:
+          Accept: "application/json"
+          Content-Type: "application/json"
+        auth:
+          - "{{ servicenow_username }}"
+          - "{{ servicenow_password }}"
+        body:
+          state: "3"  # 3 = Closed Complete
+          close_notes: "User successfully created in Azure AD. Request completed."
+        body_format: json
+        status_code: [200, 204]
+      when: user_creation is defined and user_creation.status == 201
+    
+    - name: Send notification email about completion
+      uri:
+        url: "{{ servicenow_instance }}/api/now/table/sys_email"
+        method: POST
+        headers:
+          Accept: "application/json"
+          Content-Type: "application/json"
+        auth:
+          - "{{ servicenow_username }}"
+          - "{{ servicenow_password }}"
+        body:
+          type: "send-now"
+          recipients: "{{ default_user_email }}"
+          subject: "Azure AD User Creation Complete"
+          body: |
+            Hello {{ default_user_name }},
+            
+            Your Azure AD user has been successfully created with the following details:
+            - Username: {{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com
+            - Initial Password: Default@1234
+            
+            You will be required to change your password on first login.
+            
+            Thank you,
+            IT Service Desk
+        body_format: json
+        status_code: [201]
+      when: user_creation is defined and user_creation.status == 201
