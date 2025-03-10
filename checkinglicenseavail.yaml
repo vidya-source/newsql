@@ -13,7 +13,7 @@
     default_user_email: "vidyar@gmail.com"
     default_user_name: "vidyar"
     default_mail_nickname: "vidyar"
-    requested_sys_id: "223a928b83c0a210d081f696feaad3f7"
+    requested_sys_id: ""
   tasks:
     - name: Get Azure access token
       uri:
@@ -138,33 +138,4 @@
           close_notes: "User successfully created in Azure AD. Request completed."
         body_format: json
         status_code: [200, 204]
-      when: user_creation is defined and user_creation.status == 201
-    
-    - name: Send notification email about completion
-      uri:
-        url: "{{ servicenow_instance }}/api/now/table/sys_email"
-        method: POST
-        headers:
-          Accept: "application/json"
-          Content-Type: "application/json"
-        auth:
-          - "{{ servicenow_username }}"
-          - "{{ servicenow_password }}"
-        body:
-          type: "send-now"
-          recipients: "{{ default_user_email }}"
-          subject: "Azure AD User Creation Complete"
-          body: |
-            Hello {{ default_user_name }},
-            
-            Your Azure AD user has been successfully created with the following details:
-            - Username: {{ default_mail_nickname }}@amitomar63gmail.onmicrosoft.com
-            - Initial Password: Default@1234
-            
-            You will be required to change your password on first login.
-            
-            Thank you,
-            IT Service Desk
-        body_format: json
-        status_code: [201]
       when: user_creation is defined and user_creation.status == 201
