@@ -8,7 +8,7 @@
     mysql_password: "mysqlAutomation"
     mysql_port: 3306
     ansible_host: "{{ mysql_server }}"
-    ansible_user: "mysqlauto"  # Replace with your SSH username
+    ansible_user: "root"  # Replace with your SSH username
  
   tasks:
     - name: Get Database Space Utilization
