@@ -1,76 +1,9 @@
-# Playbook: mysql_connection.yml
-# Description: Connect to MySQL server and run a test query
-# For use with AWX
-- name: Connect to MySQL Server
+---
+- name: Check MySQL Server Health
   hosts: localhost
-  gather_facts: true  # Changed to true to detect package manager
+  gather_facts: no
   vars:
     mysql_host: "10.112.0.11"
-    mysql_port: "3306"
-    mysql_user: "mysqlauto"
+    mysql_user: "mysqlauto" 
     mysql_password: "mysqlAutomation"
-    mysql_db: "information_schema"
-    
-  tasks:
-    - name: Ensure python-mysql dependencies are installed (apt)
-      become: true
-      apt:
-        name: "{{ item }}"
-        state: present
-        update_cache: yes
-      loop:
-        - python3-mysqldb
-        - python3-pymysql
-      when: ansible_pkg_mgr == 'apt'
-      
-    - name: Ensure python-mysql dependencies are installed (yum/dnf)
-      become: true
-      package:
-        name: "{{ item }}"
-        state: present
-      loop:
-        - python3-mysql
-        - python3-PyMySQL
-      when: ansible_pkg_mgr == 'yum' or ansible_pkg_mgr == 'dnf'
-
-    # Alternative approach using pip
-    - name: Install PyMySQL using pip
-      become: true
-      pip:
-        name: pymysql
-        state: present
-      when: ansible_pkg_mgr is not defined
-
-    # The rest of your tasks remain the same
-    - name: Test MySQL connection
-      mysql_info:
-        login_host: "{{ mysql_host }}"
-        login_port: "{{ mysql_port }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_db }}"
-      register: mysql_status
-      
-    - name: Display MySQL connection status
-      debug:
-        msg: "Successfully connected to MySQL server {{ mysql_host }}:{{ mysql_port }}"
-      when: mysql_status is defined
-      
-    - name: Show MySQL version
-      debug:
-        msg: "MySQL version: {{ mysql_status.version.version }}"
-      when: mysql_status is defined and mysql_status.version is defined
-      
-    - name: Execute test query
-      mysql_query:
-        login_host: "{{ mysql_host }}"
-        login_port: "{{ mysql_port }}"
-        login_user: "{{ mysql_user }}"
-        login_password: "{{ mysql_password }}"
-        login_db: "{{ mysql_db }}"
-        query: "SHOW DATABASES;"
-      register: query_result
-      
-    - name: Display available databases
-      debug:
-        var: query_result.query_result
+    mysql_port: 3306
