@@ -1,5 +1,5 @@
 ---
-- name: Check MySQL Connection in AWX (Python only)
+- name: Check MySQL Connection in AWX (Using Ansible modules)
   hosts: localhost
   gather_facts: no
   vars:
@@ -7,59 +7,40 @@
     mysql_user: "root"
     mysql_password: "mysqlAutomation"
     mysql_port: 3306
-
   tasks:
-    - name: Install pymysql
+    - name: Install required Python modules
       pip:
-        name: pymysql
+        name:
+          - pymysql
+          - mysqlclient
         state: present
-      register: pymysql_install
       ignore_errors: yes
-
-    - name: Test MySQL Connection with Python
-      shell: |
-        python3 -c "
-        import sys
-        try:
-            import pymysql
-            try:
-                conn = pymysql.connect(
-                    host='{{ mysql_host }}',
-                    user='{{ mysql_user }}',
-                    password='{{ mysql_password }}',
-                    port={{ mysql_port }},
-                    connect_timeout=5
-                )
-                print('Connection successful')
-                conn.close()
-                sys.exit(0)
-            except Exception as e:
-                print(f'MySQL Connection failed: {e}')
-                sys.exit(1)
-        except ImportError:
-            print('PyMySQL module not available')
-            sys.exit(2)
-        "
-      register: mysql_py_connection
+      
+    - name: Test MySQL Connection
+      community.mysql.mysql_info:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        login_port: "{{ mysql_port }}"
+      register: mysql_connection
       ignore_errors: yes
       
     - name: Display Connection Result
       debug:
         msg: |
-          {% if mysql_py_connection.rc == 0 %}
+          {% if mysql_connection is success %}
           ✅ MySQL Connection Successful!
-          {% elif mysql_py_connection.rc == 2 %}
-          ⚠️ Could not test connection: PyMySQL module not available
+          MySQL Version: {{ mysql_connection.version.major }}.{{ mysql_connection.version.minor }}.{{ mysql_connection.version.release }}
           {% else %}
           ❌ MySQL Connection Failed!
-          Error: {{ mysql_py_connection.stdout }}
+          Error: {{ mysql_connection.msg }}
           {% endif %}
           
     - name: Set Connection Status Fact
       set_fact:
-        mysql_connection_status: "{{ mysql_py_connection.rc == 0 }}"
+        mysql_connection_status: "{{ mysql_connection is success }}"
         
     - name: Fail if Connection Unsuccessful
       fail:
         msg: "Failed to connect to MySQL server at {{ mysql_host }}:{{ mysql_port }}"
-      when: mysql_py_connection.rc == 1
+      when: not mysql_connection is success
