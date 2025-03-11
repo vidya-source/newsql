@@ -1,60 +1,58 @@
 ---
-# mysql_connection.yml - Ansible playbook to connect to a MySQL server
-- name: Connect to MySQL Server
-  hosts: mysql_servers  # Define this group in your inventory
-  become: true  # Use sudo privileges
-  gather_facts: true
+# Playbook: mysql_connection.yml
+# Description: Connect to MySQL server and run a test query
+# For use with AWX
 
+- name: Connect to MySQL Server
+  hosts: localhost
+  gather_facts: false
   vars:
-    mysql_host: "{{ mysql_server_host | default('localhost') }}"
-    mysql_port: "{{ mysql_server_port | default('3306') }}"
-    mysql_user: "{{ mysql_server_user | default('root') }}"
-    mysql_password: "{{ mysql_server_password | default('') }}"
-    mysql_db: "{{ mysql_server_db | default('mysql') }}"
+    mysql_host: "10.112.0.11"
+    mysql_port: "3306"
+    mysql_user: "mysqlauto"
+    mysql_password: "mysqlAutomation"
+    mysql_db: "information_schema"
     
   tasks:
-    - name: Install MySQL client
+    - name: Ensure python-mysql dependencies are installed
+      become: true
       package:
         name: "{{ item }}"
         state: present
       loop:
-        - mysql-client  # Debian/Ubuntu
-        - python3-pymysql  # Required for Ansible MySQL modules
-      failed_when: false  # Continue if a package isn't available on this distro
-      
-    - name: Install MySQL client (RedHat/CentOS)
-      package:
-        name: "{{ item }}"
-        state: present
-      loop:
-        - mysql  # RedHat/CentOS
-        - python3-PyMySQL  # RedHat/CentOS
-      when: ansible_facts['os_family'] == "RedHat"
-      failed_when: false
-    
-    - name: Create MySQL config file with connection details
-      template:
-        src: my.cnf.j2
-        dest: ~/.my.cnf
-        mode: '0600'  # Secure permissions for credential file
-      become: false  # Create in user's home directory
+        - python3-mysqldb
+        - python3-pymysql
+      ignore_errors: true
       
     - name: Test MySQL connection
-      community.mysql.mysql_info:
+      mysql_info:
         login_host: "{{ mysql_host }}"
+        login_port: "{{ mysql_port }}"
         login_user: "{{ mysql_user }}"
         login_password: "{{ mysql_password }}"
-        login_port: "{{ mysql_port }}"
+        login_db: "{{ mysql_db }}"
       register: mysql_status
-      become: false
-      ignore_errors: true
       
     - name: Display MySQL connection status
       debug:
-        msg: "MySQL connection successful. Version: {{ mysql_status.version.full }}"
-      when: mysql_status is succeeded
-        
-    - name: Display connection failure message
+        msg: "Successfully connected to MySQL server {{ mysql_host }}:{{ mysql_port }}"
+      when: mysql_status is defined
+      
+    - name: Show MySQL version
       debug:
-        msg: "Failed to connect to MySQL. Please check credentials and network access."
-      when: mysql_status is failed
+        msg: "MySQL version: {{ mysql_status.version.version }}"
+      when: mysql_status is defined and mysql_status.version is defined
+      
+    - name: Execute test query
+      mysql_query:
+        login_host: "{{ mysql_host }}"
+        login_port: "{{ mysql_port }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        login_db: "{{ mysql_db }}"
+        query: "SHOW DATABASES;"
+      register: query_result
+      
+    - name: Display available databases
+      debug:
+        var: query_result.query_result
