@@ -1,5 +1,5 @@
 ---
-- name: Check MySQL Connection
+- name: Check MySQL Connection in AWX
   hosts: localhost
   gather_facts: no
   vars:
@@ -9,9 +9,42 @@
     mysql_port: 3306
 
   tasks:
+    # First check if mysql client is available on the AWX execution node
+    - name: Check if MySQL client is installed
+      command: which mysql
+      register: mysql_client_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Show MySQL client status
+      debug:
+        msg: "MySQL client {{ 'is available' if mysql_client_check.rc == 0 else 'is NOT available' }}"
+
+    # If running in AWX, we can conditionally add the mysql client to the execution environment
     - name: Test MySQL Connection
       shell: |
+        {% if mysql_client_check.rc == 0 %}
         mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -e "SELECT 1;"
+        {% else %}
+        # Try to use the python connector instead since mysql client isn't available
+        python3 -c "
+        import pymysql
+        try:
+            conn = pymysql.connect(
+                host='{{ mysql_host }}',
+                user='{{ mysql_user }}',
+                password='{{ mysql_password }}',
+                port={{ mysql_port }},
+                connect_timeout=5
+            )
+            print('Connection successful')
+            conn.close()
+            exit(0)
+        except Exception as e:
+            print(f'Connection failed: {e}')
+            exit(1)
+        "
+        {% endif %}
       register: mysql_connection
       ignore_errors: yes
       
@@ -23,6 +56,9 @@
           {% else %}
           ❌ MySQL Connection Failed!
           Error: {{ mysql_connection.stderr }}
+          
+          Note: In AWX, you may need to ensure your execution environment 
+          has the MySQL client or Python MySQL connector installed.
           {% endif %}
           
     - name: Set Connection Status Fact
