@@ -20,13 +20,24 @@
       debug:
         msg: "MySQL client {{ 'is available' if mysql_client_check.rc == 0 else 'is NOT available' }}"
 
-    # If running in AWX, we can conditionally add the mysql client to the execution environment
-    - name: Test MySQL Connection
+    # Try MySQL client connection if available
+    - name: Test MySQL Connection with client
+      shell: mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -e "SELECT 1;"
+      register: mysql_connection
+      ignore_errors: yes
+      when: mysql_client_check.rc == 0
+
+    # Try Python MySQL connector as fallback
+    - name: Install pymysql (if needed)
+      pip:
+        name: pymysql
+        state: present
+      register: pymysql_install
+      ignore_errors: yes
+      when: mysql_client_check.rc != 0
+
+    - name: Test MySQL Connection with Python
       shell: |
-        {% if mysql_client_check.rc == 0 %}
-        mysql -h{{ mysql_host }} -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -e "SELECT 1;"
-        {% else %}
-        # Try to use the python connector instead since mysql client isn't available
         python3 -c "
         import pymysql
         try:
@@ -44,26 +55,32 @@
             print(f'Connection failed: {e}')
             exit(1)
         "
-        {% endif %}
-      register: mysql_connection
+      register: mysql_py_connection
       ignore_errors: yes
+      when: mysql_client_check.rc != 0 and pymysql_install is success
       
     - name: Display Connection Result
       debug:
         msg: |
-          {% if mysql_connection.rc == 0 %}
+          {% if (mysql_connection is defined and mysql_connection.rc == 0) or 
+                (mysql_py_connection is defined and mysql_py_connection.rc == 0) %}
           ✅ MySQL Connection Successful!
+          {% elif mysql_client_check.rc == 0 %}
+          ❌ MySQL Connection Failed with client!
+          Error: {{ mysql_connection.stderr if mysql_connection.stderr is defined else 'Unknown error' }}
           {% else %}
           ❌ MySQL Connection Failed!
-          Error: {{ mysql_connection.stderr }}
-          
-          Note: In AWX, you may need to ensure your execution environment 
-          has the MySQL client or Python MySQL connector installed.
+          {% if pymysql_install is success and mysql_py_connection is defined %}
+          Python connection error: {{ mysql_py_connection.stderr if mysql_py_connection.stderr is defined else 'Unknown error' }}
+          {% else %}
+          MySQL client not available and Python connector couldn't be used.
+          {% endif %}
           {% endif %}
           
     - name: Set Connection Status Fact
       set_fact:
-        mysql_connection_status: "{{ mysql_connection.rc == 0 }}"
+        mysql_connection_status: "{{ (mysql_connection is defined and mysql_connection.rc == 0) or 
+                                    (mysql_py_connection is defined and mysql_py_connection.rc == 0) }}"
         
     - name: Fail if Connection Unsuccessful
       fail:
