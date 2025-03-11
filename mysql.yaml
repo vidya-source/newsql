@@ -1,112 +1,60 @@
 ---
-- name: Check MySQL Server Health
-  hosts: all
-  gather_facts: no
+# mysql_connection.yml - Ansible playbook to connect to a MySQL server
+- name: Connect to MySQL Server
+  hosts: mysql_servers  # Define this group in your inventory
+  become: true  # Use sudo privileges
+  gather_facts: true
+
   vars:
-    mysql_server: "10.112.0.11"
-    mysql_user: "mysqlauto"
-    mysql_password: "mysqlAutomation"
-    mysql_port: 3306
-    ansible_host: "{{ mysql_server }}"
-    ansible_user: "root"  # Replace with your SSH username
- 
+    mysql_host: "{{ mysql_server_host | default('localhost') }}"
+    mysql_port: "{{ mysql_server_port | default('3306') }}"
+    mysql_user: "{{ mysql_server_user | default('root') }}"
+    mysql_password: "{{ mysql_server_password | default('') }}"
+    mysql_db: "{{ mysql_server_db | default('mysql') }}"
+    
   tasks:
-    - name: Get Database Space Utilization
-      shell: |
-        mysql -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          table_schema AS DatabaseName,
-          ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS SizeMB
-        FROM information_schema.tables 
-        GROUP BY table_schema;"
-      register: db_space
-      ignore_errors: yes
- 
-    - name: Get Database Health
-      shell: |
-        mysql -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          schema_name AS DatabaseName,
-          'ONLINE' AS Status,
-          (SELECT COUNT(*) FROM information_schema.processlist WHERE command != 'Sleep') AS ActiveRequests,
-          (SELECT COUNT(*) FROM information_schema.processlist) AS ActiveUserConnections,
-          (SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'Waiting for table metadata lock') AS PendingRequests,
-          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Threads_running') AS CPUQueueLength
-        FROM information_schema.schemata;"
-      register: db_health
-      ignore_errors: yes
- 
-    - name: Check for Deadlocks
-      shell: |
-        mysql -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT COUNT(*) AS Deadlocks 
-        FROM information_schema.innodb_trx t1 
-        INNER JOIN information_schema.innodb_trx t2 
-        WHERE t1.trx_id != t2.trx_id 
-        AND t1.trx_waiting_lock_id = t2.trx_lock_id 
-        AND t2.trx_waiting_lock_id = t1.trx_lock_id;"
-      register: deadlocks
-      ignore_errors: yes
- 
-    - name: Get MySQL Events Status
-      shell: |
-        mysql -P{{ mysql_port }} -u{{ mysql_user }} -p{{ mysql_password }} -N -e "
-        SELECT 
-          event_name,
-          status,
-          last_executed,
-          CASE 
-            WHEN execute_at IS NOT NULL THEN 'SCHEDULED'
-            WHEN on_completion = 'PRESERVE' THEN 'RECURRING'
-            ELSE 'ONE-TIME'
-          END as event_type
-        FROM information_schema.events;"
-      register: event_activities
-      ignore_errors: yes
- 
-    - name: Process MySQL Output
-      set_fact:
-        db_space_fact: "{{ db_space.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'SizeMB']) | list }}"
-        db_health_fact: "{{ db_health.stdout_lines | map('split', '\t') | 
-                          map('list') | map('dict', ['DatabaseName', 'Status', 'ActiveRequests', 
-                          'ActiveUserConnections', 'PendingRequests', 'CPUQueueLength']) | list }}"
-        deadlocks_fact: "{{ {'Deadlocks': deadlocks.stdout | trim | int } }}"
-        event_activities_fact: "{{ event_activities.stdout_lines | map('split', '\t') | 
-                                 map('list') | map('dict', ['event_name', 'status', 
-                                 'last_executed', 'event_type']) | list }}"
- 
-    - name: Display Formatted Results
+    - name: Install MySQL client
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - mysql-client  # Debian/Ubuntu
+        - python3-pymysql  # Required for Ansible MySQL modules
+      failed_when: false  # Continue if a package isn't available on this distro
+      
+    - name: Install MySQL client (RedHat/CentOS)
+      package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - mysql  # RedHat/CentOS
+        - python3-PyMySQL  # RedHat/CentOS
+      when: ansible_facts['os_family'] == "RedHat"
+      failed_when: false
+    
+    - name: Create MySQL config file with connection details
+      template:
+        src: my.cnf.j2
+        dest: ~/.my.cnf
+        mode: '0600'  # Secure permissions for credential file
+      become: false  # Create in user's home directory
+      
+    - name: Test MySQL connection
+      community.mysql.mysql_info:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_user }}"
+        login_password: "{{ mysql_password }}"
+        login_port: "{{ mysql_port }}"
+      register: mysql_status
+      become: false
+      ignore_errors: true
+      
+    - name: Display MySQL connection status
       debug:
-        msg: |
-          📊 Database Space Utilization:
-          {% for item in db_space_fact %}
-           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
-          {% endfor %}
-          🚨 Deadlocks:
-          {% if deadlocks_fact.Deadlocks > 0 %}
-           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
-          {% else %}
-           - No deadlocks detected
-          {% endif %}
-          [ℹ️] Events query returned {{ event_activities_fact | length }} rows.
-          🛠 MySQL Events Status:
-          {% for event in event_activities_fact %}
-           - Event: {{ event.event_name }}
-             Status: {{ event.status }}
-             Last Executed: {{ event.last_executed }}
-             Type: {{ event.event_type }}
-          {% endfor %}
-          🩺 Database Health Check:
-          {% if db_health_fact | length > 0 %}
-            {% for item in db_health_fact %}
-               - Database: {{ item.DatabaseName }}
-                 - Status: {{ item.Status }}
-                 - Active Requests: {{ item.ActiveRequests }}
-                 - Active User Connections: {{ item.ActiveUserConnections }}
-                 - Pending Requests: {{ item.PendingRequests }}
-                 - Running Threads: {{ item.CPUQueueLength }}
-            {% endfor %}
-          {% else %}
-            [❌] No database health data available.
-          {% endif %}
+        msg: "MySQL connection successful. Version: {{ mysql_status.version.full }}"
+      when: mysql_status is succeeded
+        
+    - name: Display connection failure message
+      debug:
+        msg: "Failed to connect to MySQL. Please check credentials and network access."
+      when: mysql_status is failed
