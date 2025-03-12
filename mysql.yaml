@@ -10,16 +10,6 @@
     mysql_port: "3306"
 
   tasks:
-    - name: Install Python MySQL dependencies
-      become: yes
-      package:
-        name: 
-          - python3-pymysql
-          - python3-mysqldb
-        state: present
-      ignore_errors: yes
-
-    # Alternative approach using direct command execution
     - name: Check MySQL connection
       shell: >
         mysql --host={{ mysql_host }} --user={{ mysql_username }} 
