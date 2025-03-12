@@ -1,16 +1,120 @@
 ---
-- hosts: localhost
-  become: true
-  gather_facts: false
-  tasks:
-    - name: Connect to MySQL server
-      mysql_db:
-        host: 20.55.88.203
-        port: "3306"
-        user: "mysqlauto"
-        password: "mysqlAutomation"
-      register: mysql_result
+- name: MySQL Monitoring Playbook
+  hosts: 10.112.0.11
+  gather_facts: no
+  vars:
+    mysql_host: "20.55.88.203"
+    mysql_database: "information_schema"
+    mysql_username: "mysqlauto"
+    mysql_password: "mysqlAutomation"
+    mysql_port: "3306"
 
-    - name: Print the result
+  tasks:
+    - name: Verify MySQL connection
+      community.mysql.mysql_info:
+        login_host: "{{ mysql_host }}"
+        login_user: "{{ mysql_username }}"
+        login_password: "{{ mysql_password }}"
+        login_port: "{{ mysql_port }}"
+      register: mysql_connection
+      ignore_errors: yes
+
+    - name: Print connection status
       debug:
-        msg: "{{ mysql_result }}"
+        msg: "[✅] Connected to MySQL Server successfully"
+      when: mysql_connection is succeeded
+
+    - name: Print connection error
+      debug:
+        msg: "[❌] MySQL Connection Error: {{ mysql_connection.msg }}"
+      when: mysql_connection is failed
+
+    - block:
+        - name: Check database space utilization
+          community.mysql.mysql_query:
+            login_host: "{{ mysql_host }}"
+            login_user: "{{ mysql_username }}"
+            login_password: "{{ mysql_password }}"
+            login_db: "{{ mysql_database }}"
+            query: >
+              SELECT table_schema AS DatabaseName,
+                     SUM(data_length + index_length) / 1024 / 1024 AS TotalSizeMB
+              FROM information_schema.tables
+              GROUP BY table_schema;
+          register: db_space_result
+
+        - name: Display database space utilization
+          debug:
+            msg: "📊 Database Space Utilization: {{ item.DatabaseName }}: {{ item.TotalSizeMB }} MB"
+          loop: "{{ db_space_result.query_result }}"
+          loop_control:
+            label: "{{ item.DatabaseName }}"
+
+        - name: Check for deadlocks
+          community.mysql.mysql_query:
+            login_host: "{{ mysql_host }}"
+            login_user: "{{ mysql_username }}"
+            login_password: "{{ mysql_password }}"
+            query: "SHOW ENGINE INNODB STATUS;"
+          register: deadlock_result
+
+        - name: Parse deadlock result
+          set_fact:
+            has_deadlock: "{{ 'LATEST DETECTED DEADLOCK' in (deadlock_result.query_result[0] | to_json) }}"
+
+        - name: Display deadlock information
+          debug:
+            msg: "🚨 Deadlocks: {{ 'Deadlock detected' if has_deadlock else 'No deadlocks detected' }}"
+
+        - name: Check MySQL event scheduler activities
+          community.mysql.mysql_query:
+            login_host: "{{ mysql_host }}"
+            login_user: "{{ mysql_username }}"
+            login_password: "{{ mysql_password }}"
+            login_db: "{{ mysql_database }}"
+            query: >
+              SELECT event_name, status
+              FROM information_schema.events
+              WHERE status = 'ENABLED';
+          register: events_result
+          ignore_errors: yes
+
+        - name: Display event scheduler activities
+          debug:
+            msg: "🛠 MySQL Event Activities: Event: {{ item.event_name }} | Status: {{ item.status }}"
+          loop: "{{ events_result.query_result }}"
+          when: events_result.query_result | length > 0
+          loop_control:
+            label: "{{ item.event_name }}"
+
+        - name: Display no active events message
+          debug:
+            msg: "🛠 MySQL Event Activities: No active events found."
+          when: events_result.query_result | length == 0
+
+        - name: Check MySQL version via command line
+          shell: >
+            mysql --host={{ mysql_host }} --user={{ mysql_username }} --password={{ mysql_password }} -e 'SELECT VERSION();'
+          register: mysql_version
+          changed_when: false
+          ignore_errors: yes
+
+        - name: Display MySQL version
+          debug:
+            msg: "[ℹ️] MySQL Version (via command line): {{ mysql_version.stdout }}"
+          when: mysql_version is succeeded
+
+        - name: Check MySQL health status
+          community.mysql.mysql_query:
+            login_host: "{{ mysql_host }}"
+            login_user: "{{ mysql_username }}"
+            login_password: "{{ mysql_password }}"
+            query: "SHOW STATUS LIKE 'Threads_connected';"
+          register: health_result
+
+        - name: Display MySQL health information
+          debug:
+            msg: "🩺 Database Health Check: Active Connections: {{ health_result.query_result[0].Value }}"
+          when: health_result.query_result | length > 0
+
+      when: mysql_connection is succeeded
