@@ -1,11 +1,11 @@
 ---
-- hosts: 20.55.88.203
+- hosts: localhost
   become: true
   gather_facts: false
   tasks:
     - name: Connect to MySQL server
       mysql_db:
-        host: "mysqlAutomation"
+        host: 20.55.88.203
         port: "3306"
         user: "mysqlauto"
         password: "mysqlAutomation"
