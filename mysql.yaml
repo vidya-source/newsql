@@ -1,6 +1,6 @@
 ---
 - name: MySQL Monitoring Playbook
-  hosts: all
+  hosts: localhost
   gather_facts: no
   vars:
     mysql_host: "20.55.88.203"
