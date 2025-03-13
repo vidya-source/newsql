@@ -6,7 +6,7 @@
     sql_instance: "10.112.0.10"
     sql_user: "{{ sql_user }}"
     sql_password: "{{ sql_password }}"
-
+ 
   tasks:
     - name: Get Disk Space Utilization
       win_shell: |
@@ -18,7 +18,7 @@
         }
       register: disk_space
       ignore_errors: yes
-
+ 
     - name: Get Database Space Utilization
       win_shell: |
         try {
@@ -30,7 +30,7 @@
         }
       register: db_space
       ignore_errors: yes
-
+ 
     - name: Get Database Health
       win_shell: |
         try {
@@ -42,7 +42,7 @@
         }
       register: db_health
       ignore_errors: yes
-
+ 
     - name: Check for Deadlocks
       win_shell: |
         try {
@@ -54,7 +54,7 @@
         }
       register: deadlocks
       ignore_errors: yes
-
+ 
     - name: Get SQL Agent Job Activities
       win_shell: |
         try {
@@ -66,7 +66,7 @@
         }
       register: job_activities
       ignore_errors: yes
-
+ 
     - name: Check SQL Server Error Log for Issues
       win_shell: |
         try {
@@ -76,9 +76,9 @@
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
         }
-      register: sql_errors
+      register: error_logs
       ignore_errors: yes
-
+ 
     - name: Convert Outputs to JSON
       set_fact:
         db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
@@ -86,149 +86,126 @@
         deadlocks_fact: "{{ deadlocks.stdout | default('[]') | from_json }}"
         job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
         disk_space_fact: "{{ disk_space.stdout | default('[]') | from_json }}"
-        sql_errors_fact: "{{ sql_errors.stdout | default('[]') | from_json }}"
-        
-    - name: Check for Offline Databases
-      set_fact:
-        has_offline_db: false
-        offline_db_names: []
-      no_log: true
-
-    - name: Mark Offline Databases
-      set_fact:
-        has_offline_db: true
-        offline_db_names: "{{ offline_db_names + [item.DatabaseName] }}"
-      when: item.Status == "OFFLINE"
-      with_items: "{{ db_health_fact }}"
-      no_log: true
-
+        error_logs_fact: "{{ error_logs.stdout | default('[]') | from_json }}"
+    
+    - name: Display Formatted Results
+      debug:
+        msg: |
+          💾 Disk Space:
+          {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item %}
+            - Volume: {{ item.DeviceID }} | Free Space: {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB
+          {% else %}
+            - No valid disk space data available.
+          {% endfor %}
+ 
+          📊 Database Space Utilization:
+          {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
+           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% endfor %}
+          🚨 Deadlocks:
+          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
+           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% else %}
+           - No deadlocks detected
+          {% endif %}
+          [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
+          🛠 SQL Server Agent Job Activities:
+          {% if job_activities_fact.name is defined and job_activities_fact.enabled is defined and job_activities_fact.last_run_status is defined %}
+           - Job: {{ job_activities_fact.name }} | Enabled: {{ job_activities_fact.enabled }} | Last Outcome: 
+             {% if job_activities_fact.last_run_status | default(-1) == 1 %}
+               Succeeded
+             {% elif job_activities_fact.last_run_status | default(-1) == 0 %}
+               Failed
+             {% elif job_activities_fact.last_run_status | default(-1) == 2 %}
+               Retry
+             {% elif job_activities_fact.last_run_status | default(-1) == 3 %}
+               Canceled
+             {% else %}
+               Unknown
+             {% endif %}
+          {% else %}
+            [❌] No job activities found or missing required fields.
+          {% endif %}
+          🩺 Database Health Check:
+          {% if db_health_fact is defined and db_health_fact | length > 0 %}
+            {% for item in db_health_fact | default([]) %}
+               - Database: {{ item.DatabaseName | default([]) }}
+                 - Status: {{ item.Status | default([]) }}
+                 - Active Requests: {{ item.ActiveRequests | default(0) }}
+                 - Active User Connections: {{ item.ActiveUserConnections | default(0) }}
+                 - Pending Requests: {{ item.PendingRequests | default(0) }}
+                 - CPU Queue Length: {{ item.CPUQueueLength | default(0) }}
+            {% endfor %}
+          {% else %}
+            [❌] No database health data available.
+          {% endif %}
+          
+          📜 SQL Server Error Log:
+          {% if error_logs_fact is defined and error_logs_fact | length > 0 %}
+            {% for item in error_logs_fact | default([]) %}
+              - Date: {{ item.logdate | default('Unknown') }}
+                - Process: {{ item.processinfo | default('Unknown') }}
+                - Message: {{ item.text | default('No message') | truncate(100) }}
+            {% endfor %}
+          {% else %}
+            [ℹ️] No errors found in SQL Server logs or error log data not available.
+          {% endif %}
+          
     - name: Display SQL Server Issues and Troubleshooting Suggestions
       debug:
         msg: |
-          #########################################################################
-          #                SQL SERVER HEALTH CHECK SUMMARY REPORT                 #
-          #########################################################################
-
-          ⚠️ **CRITICAL SQL SERVER ISSUES:**
-          {% if sql_errors_fact is defined and sql_errors_fact | length > 0 %}
-            {% for error in sql_errors_fact %}
-              - **Timestamp:** {{ error.logdate | default("N/A") }}
-              - **Process:** {{ error.processinfo | default("N/A") }}
-              - **Error Message:** {{ error.text | default("N/A") }}
-              **🔧 Suggested Troubleshooting Steps:**
-              {% if 'login failed' in error.text | lower %}
-                - Check SQL login credentials.
-                - Verify if the login exists and is enabled (`SELECT * FROM sys.sql_logins`).
-                - Ensure correct authentication mode is set (`SELECT SERVERPROPERTY('IsIntegratedSecurityOnly')`).
-              {% elif 'deadlock' in error.text | lower %}
-                - Identify deadlock victims (`SELECT * FROM sys.dm_tran_locks`).
-                - Review long-running transactions.
-                - Optimize indexing and query performance.
-              {% elif 'severity 17' in error.text | lower %}
-                - Indicates insufficient resources. Check available memory and disk space.
-                - Review running processes with `sys.dm_exec_requests`.
-              {% elif 'severity 20' in error.text | lower %}
-                - Fatal error detected. Check error log for more details.
-                - Restart SQL Server if necessary.
-              {% else %}
-                - Review the error message and check SQL documentation for resolution.
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-          
-          {% if has_offline_db %}
-            {% for db in db_health_fact %}
-              {% if db.Status == "OFFLINE" %}
-              🚨 **CRITICAL: Database {{ db.DatabaseName }} is OFFLINE!**
-              - **Possible reasons:**
-                - Manually taken offline
-                - Storage or corruption issues
-                - SQL Server restart
-              - **Suggested Fix:**
-                - `ALTER DATABASE {{ db.DatabaseName }} SET ONLINE;`
-                - Check storage space and error logs
-              {% endif %}
-            {% endfor %}
-          {% elif sql_errors_fact | length == 0 %}
-            ✅ No critical errors found in the SQL Server logs.
-          {% endif %}
-
-          #########################################################################
-          
-          📊 **DISK SPACE UTILIZATION:**
-          {% if disk_space_fact is defined and disk_space_fact | length > 0 %}
-            {% for disk in disk_space_fact %}
-              - Drive: {{ disk.DeviceID }}
-              {% if disk.VolumeName %}  - Name: {{ disk.VolumeName }}{% endif %}
-              {% if disk.Size %}  - Total Size: {{ (disk.Size / 1073741824) | round(2) }} GB{% endif %}
-              {% if disk.FreeSpace %}  - Free Space: {{ (disk.FreeSpace / 1073741824) | round(2) }} GB ({{ ((disk.FreeSpace / disk.Size) * 100) | round(2) }}%){% endif %}
-              {% if (disk.FreeSpace / disk.Size) < 0.1 %}  - ⚠️ **LOW DISK SPACE WARNING!**{% endif %}
-            {% endfor %}
-          {% else %}
-            ❌ No disk space information available.
-          {% endif %}
-          
-          #########################################################################
-          
-          💾 **DATABASE SPACE UTILIZATION:**
-          {% if db_space_fact is defined and db_space_fact | length > 0 %}
-            {% for db in db_space_fact %}
-              - Database: {{ db.DatabaseName }}
-                - Size: {{ db.SizeMB | round(2) }} MB
-            {% endfor %}
-          {% else %}
-            ❌ No database space information available.
-          {% endif %}
-          
-          #########################################################################
-          
-          🩺 **DATABASE HEALTH:**
+          🩺 **Database Health Check:**
           {% if db_health_fact is defined and db_health_fact | length > 0 %}
-            {% for db in db_health_fact %}
-              - Database: {{ db.DatabaseName }}
-                - Status: {{ db.Status }}
-                - Active Requests: {{ db.ActiveRequests }}
-                - Active User Connections: {{ db.ActiveUserConnections }}
-                - Pending Requests: {{ db.PendingRequests }}
-              {% if db.Status == "OFFLINE" %}
-                🚨 **ALERT: Database {{ db.DatabaseName }} is OFFLINE!**
-              {% endif %}
-              {% if db.ActiveRequests > 10 %}
-                ⚠️ **HIGH ACTIVITY: {{ db.ActiveRequests }} active requests in {{ db.DatabaseName }}**
+            {% for item in db_health_fact %}
+              - Database: {{ item.DatabaseName }}
+                - Status: {{ item.Status }}
+              {% if item.Status == "OFFLINE" %}
+                🚨 **ALERT: Database {{ item.DatabaseName }} is OFFLINE!**
+                - Possible reasons:
+                  - Manually taken offline
+                  - Storage or corruption issues
+                  - SQL Server restart
+                - Suggested Fix:
+                  - `ALTER DATABASE {{ item.DatabaseName }} SET ONLINE;`
+                  - Check storage space and error logs
               {% endif %}
             {% endfor %}
           {% else %}
-            ❌ No database health information available.
+            ❌ No database health data available.
           {% endif %}
           
-          #########################################################################
-          
-          🔒 **DEADLOCKS CHECK:**
-          {% if deadlocks_fact is defined %}
-            {% if deadlocks_fact[0].Deadlocks is defined and deadlocks_fact[0].Deadlocks != "Error" %}
-              {% if deadlocks_fact[0].Deadlocks > 0 %}
-                🚨 **ALERT: {{ deadlocks_fact[0].Deadlocks }} deadlocks detected!**
-                - Run this query to identify affected resources:
-                  `SELECT * FROM sys.dm_tran_locks WHERE request_status = 'WAIT';`
-              {% else %}
-                ✅ No deadlocks detected.
-              {% endif %}
-            {% else %}
-              ❌ Error retrieving deadlock information.
+          💾 **Disk Space Check:**
+          {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item %}
+            {% set free_pct = (item.FreeSpace|float / item.Size|float * 100)|round(2) %}
+            {% if free_pct < 10 %}
+              🚨 **ALERT: Low disk space on {{ item.DeviceID }}!**
+              - {{ free_pct }}% free ({{ (item.FreeSpace|int / 1073741824)|round(2) }} GB)
+              - Suggested Fix:
+                - Clean up log files, temp files
+                - Review database file growth
+                - Consider adding storage
             {% endif %}
-          {% else %}
-            ❌ No deadlock information available.
+          {% endfor %}
+          
+          🔒 **Deadlock Check:**
+          {% if (deadlocks_fact.Deadlocks|default(0)|int) > 0 %}
+            🚨 **ALERT: {{ deadlocks_fact.Deadlocks }} deadlocks detected!**
+            - Suggested Fix:
+              - Review transaction isolation levels
+              - Optimize queries with high lock duration
+              - Consider using NOLOCK hint for read-only operations
           {% endif %}
           
-          #########################################################################
-          
-          📋 **SQL AGENT JOB ACTIVITIES:**
-          {% if job_activities_fact is defined and job_activities_fact | length > 0 %}
-            {% for job in job_activities_fact %}
-              - Job Name: {{ job.name }}
-                - Enabled: {{ 'Yes' if job.enabled == 1 else 'No' }}
-                - Last Run Status: {% if job.last_run_status == 1 %}✅ Success{% elif job.last_run_status == 0 %}❌ Failed{% elif job.last_run_status == 2 %}⚠️ Retry{% elif job.last_run_status == 3 %}⏹️ Canceled{% else %}⚠️ Unknown ({{ job.last_run_status }}){% endif %}
+          📜 **Error Log Analysis:**
+          {% if error_logs_fact is defined and error_logs_fact|length > 0 %}
+            {% for item in error_logs_fact %}
+              {% if item.text is defined and item.text|lower is search('severity: [1-9][0-9]') %}
+                🚨 **ALERT: High severity error detected!**
+                - {{ item.text|truncate(150) }}
+                - Time: {{ item.logdate }}
+                - Suggested Fix:
+                  - Review SQL Server error log details
+                  - Check for related issues in Windows Event Log
+              {% endif %}
             {% endfor %}
-          {% else %}
-            ❌ No SQL Agent job information available.
           {% endif %}
