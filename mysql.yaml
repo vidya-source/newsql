@@ -65,11 +65,20 @@
       register: job_activities
       ignore_errors: yes
 
-    - name: Convert Outputs to JSON
+    - name: Convert DB Space to JSON
       set_fact:
         db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
+      
+    - name: Convert DB Health to JSON
+      set_fact:
         db_health_fact: "{{ db_health.stdout | default('[]') | from_json }}"
+      
+    - name: Convert Deadlocks to JSON
+      set_fact:
         deadlocks_fact: "{{ deadlocks.stdout | default('[{\"Deadlocks\": 0}]') | from_json }}"
+      
+    - name: Convert Job Activities to JSON
+      set_fact:
         job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
 
     - name: Display Formatted Results
