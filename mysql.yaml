@@ -67,10 +67,10 @@
 
     - name: Convert Outputs to JSON
       set_fact:
-        db_space_fact: "{{ (db_space.stdout | from_json) if db_space.stdout is not none else [] }}"
-        db_health_fact: "{{ (db_health.stdout | from_json) if db_health.stdout is not none else [] }}"
-        deadlocks_fact: "{{ (deadlocks.stdout | from_json) if deadlocks.stdout is not none else {'Deadlocks': 0} }}"
-        job_activities_fact: "{{ (job_activities.stdout | from_json) if job_activities.stdout is not none else [] }}"
+        db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
+        db_health_fact: "{{ db_health.stdout | default('[]') | from_json }}"
+        deadlocks_fact: "{{ deadlocks.stdout | default('[{"Deadlocks": 0}]') | from_json }}"
+        job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
 
     - name: Display Formatted Results
       debug:
@@ -81,8 +81,8 @@
           {% endfor %}
 
           🚨 Deadlocks:
-          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
-           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% if (deadlocks_fact[0].Deadlocks | default(0) | int) > 0 %}
+           - {{ deadlocks_fact[0].Deadlocks }} deadlocks detected!
           {% else %}
            - No deadlocks detected
           {% endif %}
