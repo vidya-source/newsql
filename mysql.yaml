@@ -1,108 +1,115 @@
 ---
-- name: MySQL Monitoring Playbook
-  hosts: 10.112.0.11
+- name: Check MS SQL Server Health
+  hosts: 10.112.0.10
   gather_facts: no
   vars:
-    mysql_host: "20.55.88.203"
-    mysql_database: "information_schema"
-    mysql_username: "mysqlauto"
-    mysql_password: "mysqlAutomation"
-    mysql_port: "3306"
-
+    sql_instance: "10.112.0.10"
+    sql_user: "{{sql_user}}"
+    sql_password: "{{sql_password}}"
   tasks:
-    - name: Check MySQL connection
-      shell: >
-        mysql --host={{ mysql_host }} --user={{ mysql_username }} 
-        --password={{ mysql_password }} -e 'SELECT 1;'
-      register: mysql_conn_result
-      changed_when: false
+    - name: Get Database Space Utilization
+      win_shell: |
+        try {
+          $query = "SELECT DB_NAME(database_id) AS DatabaseName, SUM(size * 8) / 1024 AS SizeMB FROM sys.master_files GROUP BY database_id;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: db_space
       ignore_errors: yes
 
-    - name: Print connection status
+    - name: Get Database Health
+      win_shell: |
+        try {
+          $query = "SELECT db.name AS DatabaseName, db.state_desc AS Status, 
+                           (SELECT COUNT(*) FROM sys.dm_exec_requests r WHERE r.database_id = db.database_id) AS ActiveRequests, 
+                           (SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.is_user_process = 1 AND s.database_id = db.database_id) AS ActiveUserConnections, 
+                           (SELECT COUNT(*) FROM sys.dm_os_waiting_tasks w JOIN sys.dm_exec_sessions s ON w.session_id = s.session_id WHERE s.database_id = db.database_id) AS PendingRequests, 
+                           (SELECT COUNT(*) FROM sys.dm_os_performance_counters WHERE counter_name = 'Processor Queue Length') AS CPUQueueLength 
+                    FROM sys.databases db;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: db_health
+      ignore_errors: yes
+
+    - name: Check for Deadlocks
+      win_shell: |
+        try {
+          $query = "SELECT COUNT(*) AS Deadlocks FROM sys.dm_tran_locks WHERE request_status = 'WAIT';"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          if (-not $result) { Write-Output '[{"Deadlocks": 0}]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Deadlocks": "Error"}]'
+        }
+      register: deadlocks
+      ignore_errors: yes
+
+    - name: Get SQL Agent Job Activities
+      win_shell: |
+        try {
+          $query = "SELECT j.job_id, j.name, j.enabled,
+                           MAX(h.run_status) AS last_run_status
+                    FROM msdb.dbo.sysjobs j
+                    LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
+                    WHERE h.step_id = 0
+                    GROUP BY j.job_id, j.name, j.enabled;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: job_activities
+      ignore_errors: yes
+
+    - name: Convert Outputs to JSON
+      set_fact:
+        db_space_fact: "{{ (db_space.stdout | from_json) if db_space.stdout is not none else [] }}"
+        db_health_fact: "{{ (db_health.stdout | from_json) if db_health.stdout is not none else [] }}"
+        deadlocks_fact: "{{ (deadlocks.stdout | from_json) if deadlocks.stdout is not none else {'Deadlocks': 0} }}"
+        job_activities_fact: "{{ (job_activities.stdout | from_json) if job_activities.stdout is not none else [] }}"
+
+    - name: Display Formatted Results
       debug:
-        msg: "[✅] Connected to MySQL Server successfully"
-      when: mysql_conn_result is succeeded
+        msg: |
+          📊 Database Space Utilization:
+          {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
+           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% endfor %}
 
-    - name: Print connection error
-      debug:
-        msg: "[❌] MySQL Connection Error: {{ mysql_conn_result.stderr }}"
-      when: mysql_conn_result is failed
+          🚨 Deadlocks:
+          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
+           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% else %}
+           - No deadlocks detected
+          {% endif %}
 
-    - block:
-        - name: Check database space utilization
-          shell: >
-            mysql --host={{ mysql_host }} --user={{ mysql_username }} 
-            --password={{ mysql_password }} -e "
-            SELECT table_schema AS DatabaseName,
-                   ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS TotalSizeMB
-            FROM information_schema.tables
-            GROUP BY table_schema;"
-          register: db_space_result
-          changed_when: false
+          [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
+          🛠 SQL Server Agent Job Activities:
+          {% for item in job_activities_fact | default([]) %}
+           - Job: {{ item.name | default('Unknown') }} | Enabled: {{ item.enabled | default('Unknown') }} | Last Outcome: 
+             {% if item.last_run_status | default(-1) == 1 %}
+               Succeeded
+             {% elif item.last_run_status | default(-1) == 0 %}
+               Failed
+             {% elif item.last_run_status | default(-1) == 2 %}
+               Retry
+             {% elif item.last_run_status | default(-1) == 3 %}
+               Canceled
+             {% else %}
+               Unknown
+             {% endif %}
+          {% endfor %}
 
-        - name: Display database space utilization
-          debug:
-            msg: "📊 Database Space Utilization: {{ db_space_result.stdout }}"
-
-        - name: Check for deadlocks
-          shell: >
-            mysql --host={{ mysql_host }} --user={{ mysql_username }} 
-            --password={{ mysql_password }} -e "SHOW ENGINE INNODB STATUS\G" | 
-            grep -A 10 "LATEST DETECTED DEADLOCK"
-          register: deadlock_result
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Display deadlock information
-          debug:
-            msg: >
-              🚨 Deadlocks: {{ 
-                "Deadlock detected:\n" + deadlock_result.stdout if deadlock_result.stdout_lines|length > 0 
-                else "No deadlocks detected" 
-              }}
-
-        - name: Check MySQL event scheduler activities
-          shell: >
-            mysql --host={{ mysql_host }} --user={{ mysql_username }} 
-            --password={{ mysql_password }} --database={{ mysql_database }} -e "
-            SELECT event_name, status
-            FROM information_schema.events
-            WHERE status = 'ENABLED';"
-          register: events_result
-          changed_when: false
-          ignore_errors: yes
-
-        - name: Display event scheduler activities
-          debug:
-            msg: "🛠 MySQL Event Activities:\n{{ events_result.stdout }}"
-          when: events_result.stdout_lines|length > 1
-
-        - name: Display no active events message
-          debug:
-            msg: "🛠 MySQL Event Activities: No active events found."
-          when: events_result.stdout_lines|length <= 1
-
-        - name: Check MySQL version
-          shell: >
-            mysql --host={{ mysql_host }} --user={{ mysql_username }} 
-            --password={{ mysql_password }} -e 'SELECT VERSION();'
-          register: mysql_version
-          changed_when: false
-
-        - name: Display MySQL version
-          debug:
-            msg: "[ℹ️] MySQL Version: {{ mysql_version.stdout }}"
-
-        - name: Check MySQL health status (active connections)
-          shell: >
-            mysql --host={{ mysql_host }} --user={{ mysql_username }} 
-            --password={{ mysql_password }} -e "
-            SHOW STATUS LIKE 'Threads_connected';"
-          register: health_result
-          changed_when: false
-
-        - name: Display MySQL health information
-          debug:
-            msg: "🩺 Database Health Check:\n{{ health_result.stdout }}"
-
-      when: mysql_conn_result is succeeded
+          🩺 Database Health Check:
+          {% for item in db_health_fact | default([]) %}
+           - Database: {{ item.DatabaseName | default('Unknown') }}
+             - Status: {{ item.Status | default('Unknown') }}
+             - Active Requests: {{ item.ActiveRequests | default(0) }}
+             - Active User Connections: {{ item.ActiveUserConnections | default(0) }}
+             - Pending Requests: {{ item.PendingRequests | default(0) }}
+             - CPU Queue Length: {{ item.CPUQueueLength | default(0) }}
+          {% endfor %}
