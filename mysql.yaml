@@ -6,12 +6,13 @@
     sql_instance: "10.112.0.10"
     sql_user: "{{ sql_user }}"
     sql_password: "{{ sql_password }}"
+
   tasks:
     - name: Get Disk Space Utilization
       win_shell: |
         try {
-          $disks = Get-WmiObject Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Size, FreeSpace | ConvertTo-Json -Compress
-          if (-not $disks) { Write-Output '[]' } else { Write-Output $disks }
+          $result = Get-WmiObject Win32_LogicalDisk | Select-Object DeviceID, Size, FreeSpace | ConvertTo-Json -Compress
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
         }
@@ -22,7 +23,7 @@
       win_shell: |
         try {
           $query = "SELECT DB_NAME(database_id) AS DatabaseName, SUM(size * 8) / 1024 AS SizeMB FROM sys.master_files GROUP BY database_id;"
-          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
@@ -34,9 +35,12 @@
       win_shell: |
         try {
           $query = "SELECT db.name AS DatabaseName, db.state_desc AS Status, 
-                           (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND database_id = db.database_id) AS ActiveUserConnections
+                    (SELECT COUNT(*) FROM sys.dm_exec_requests r WHERE r.database_id = db.database_id) AS ActiveRequests, 
+                    (SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.is_user_process = 1 AND s.database_id = db.database_id) AS ActiveUserConnections, 
+                    (SELECT COUNT(*) FROM sys.dm_os_waiting_tasks w JOIN sys.dm_exec_sessions s ON w.session_id = s.session_id WHERE s.database_id = db.database_id) AS PendingRequests, 
+                    (SELECT COUNT(*) FROM sys.dm_os_performance_counters WHERE counter_name = 'Processor Queue Length') AS CPUQueueLength 
                     FROM sys.databases db;"
-          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
@@ -59,8 +63,7 @@
     - name: Check for Blocking Sessions
       win_shell: |
         try {
-          $query = "SELECT blocking_session_id, waiting_session_id, wait_type, wait_time, blocking_session_id 
-                    FROM sys.dm_exec_requests WHERE blocking_session_id <> 0;"
+          $query = "SELECT blocking_session_id AS BlockerSession, wait_type AS WaitType FROM sys.dm_exec_requests WHERE blocking_session_id <> 0;"
           $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
@@ -72,8 +75,7 @@
     - name: Get SQL Server Error Logs
       win_shell: |
         try {
-          $query = "EXEC xp_readerrorlog 0, 1, 'error';"
-          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          $result = Get-EventLog -LogName Application -Source "MSSQLSERVER" -EntryType Error -Newest 10 | Select-Object TimeGenerated, Message | ConvertTo-Json -Compress
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
@@ -84,11 +86,13 @@
     - name: Get SQL Agent Job Activities
       win_shell: |
         try {
-          $query = "SELECT j.name, j.enabled, MAX(h.run_status) AS last_run_status
-                    FROM msdb.dbo.sysjobs j
-                    LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
-                    WHERE h.step_id = 0 GROUP BY j.name, j.enabled;"
-          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          $query = "SELECT j.job_id, j.name, j.enabled, 
+                   MAX(h.run_status) AS last_run_status 
+                   FROM msdb.dbo.sysjobs j 
+                   LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id 
+                   WHERE h.step_id = 0 
+                   GROUP BY j.job_id, j.name, j.enabled;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
@@ -98,45 +102,44 @@
 
     - name: Convert Outputs to JSON
       set_fact:
-        disk_space_fact: "{{ (disk_space.stdout | from_json) if disk_space.stdout is not none else [] }}"
-        db_space_fact: "{{ (db_space.stdout | from_json) if db_space.stdout is not none else [] }}"
-        db_health_fact: "{{ (db_health.stdout | from_json) if db_health.stdout is not none else [] }}"
-        deadlocks_fact: "{{ (deadlocks.stdout | from_json) if deadlocks.stdout is not none else {'Deadlocks': 0} }}"
-        blocking_sessions_fact: "{{ (blocking_sessions.stdout | from_json) if blocking_sessions.stdout is not none else [] }}"
-        sql_logs_fact: "{{ (sql_logs.stdout | from_json) if sql_logs.stdout is not none else [] }}"
-        job_activities_fact: "{{ (job_activities.stdout | from_json) if job_activities.stdout is not none else [] }}"
+        disk_space_fact: "{{ disk_space.stdout | default('[]') | from_json }}"
+        db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
+        db_health_fact: "{{ db_health.stdout | default('[]') | from_json }}"
+        deadlocks_fact: "{{ deadlocks.stdout | default('{\"Deadlocks\": 0}') | from_json }}"
+        blocking_sessions_fact: "{{ blocking_sessions.stdout | default('[]') | from_json }}"
+        sql_logs_fact: "{{ sql_logs.stdout | default('[]') | from_json }}"
+        job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
+
+    - name: Debug Disk Space Output
+      debug:
+        var: disk_space_fact
 
     - name: Display Formatted Results
       debug:
         msg: |
           🖥️ **Disk Space Utilization:**
-          {% for disk in disk_space_fact %}
-            - {{ disk.DeviceID }} ({{ disk.VolumeName | default('No Name') }}) → Free: {{ ((disk.FreeSpace | int) / (1024*1024*1024)) | round(2) }} GB / Total: {{ ((disk.Size | int) / (1024*1024*1024)) | round(2) }} GB
+          {% for item in disk_space_fact %}
+           - Drive {{ item.DeviceID }}: {{ ((item.FreeSpace | int * 100) / (item.Size | int)) | round(2) }}% Free
           {% endfor %}
           
-          🛑 **Deadlocks:** {{ deadlocks_fact.Deadlocks | default(0) }}
-          
+          📊 **Database Space Utilization:**
+          {% for item in db_space_fact %}
+           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% endfor %}
+
+          🚨 **Deadlocks:** {{ deadlocks_fact.Deadlocks }}
+
           🔄 **Blocking Sessions:**
-          {% for block in blocking_sessions_fact %}
-            - Blocked Session: {{ block.waiting_session_id }}, Blocker: {{ block.blocking_session_id }}, Wait Type: {{ block.wait_type }}, Wait Time: {{ block.wait_time }}
-          {% else %}
-            - No blocking detected
+          {% for item in blocking_sessions_fact %}
+           - Session {{ item.BlockerSession }}: {{ item.WaitType }}
           {% endfor %}
 
           📜 **SQL Server Logs (Errors):**
-          {% for log in sql_logs_fact %}
-            - {{ log }}
-          {% else %}
-            - No critical errors found
+          {% for item in sql_logs_fact %}
+           - {{ item.TimeGenerated }}: {{ item.Message }}
           {% endfor %}
 
-          🛠 **SQL Agent Job Activities:**
-          {% for job in job_activities_fact %}
-            - {{ job.name }} (Enabled: {{ 'Yes' if job.enabled else 'No' }}) → Last Run: 
-              {% if job.last_run_status == 1 %}✅ Succeeded
-              {% elif job.last_run_status == 0 %}❌ Failed
-              {% else %}❓ Unknown
-              {% endif %}
-          {% else %}
-            - No job activities found
+          🛠 **SQL Server Agent Job Activities:**
+          {% for item in job_activities_fact %}
+           - Job: {{ item.name }} | Enabled: {{ item.enabled }} | Last Run Status: {{ item.last_run_status }}
           {% endfor %}
