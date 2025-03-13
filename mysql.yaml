@@ -1,11 +1,13 @@
 ---
-- name: Check MS SQL Server Health
+- name: Check MS SQL Server Health & Troubleshoot
   hosts: 10.112.0.10
   gather_facts: no
+
   vars:
     sql_instance: "10.112.0.10"
-    sql_user: "{{sql_user}}"
-    sql_password: "{{sql_password}}"
+    sql_user: "{{ sql_user }}"
+    sql_password: "{{ sql_password }}"
+
   tasks:
     - name: Get Database Space Utilization
       win_shell: |
@@ -18,10 +20,11 @@
         }
       register: db_space
       ignore_errors: yes
+
     - name: Get Database Health
       win_shell: |
         try {
-          $query = "SELECT db.name AS DatabaseName,db.state_desc AS Status, (SELECT COUNT(*) FROM sys.dm_exec_requests r WHERE r.database_id = db.database_id) AS ActiveRequests,(SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.is_user_process = 1 AND s.database_id = db.database_id) AS ActiveUserConnections,(SELECT COUNT(*) FROM sys.dm_os_waiting_tasks w JOIN sys.dm_exec_sessions s ON w.session_id = s.session_id WHERE s.database_id = db.database_id) AS PendingRequests, (SELECT COUNT(*) FROM sys.dm_os_performance_counters WHERE counter_name = 'Processor Queue Length') AS CPUQueueLength FROM sys.databases db;"
+          $query = "SELECT db.name AS DatabaseName, db.state_desc AS Status FROM sys.databases db;"
           $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
@@ -29,10 +32,11 @@
         }
       register: db_health
       ignore_errors: yes
+
     - name: Check for Deadlocks
       win_shell: |
         try {
-          $query = "SELECT COUNT(*) AS Deadlocks FROM sys.dm_tran_locks WHERE request_status = 'WAIT';"
+          $query = "SELECT COUNT(*) AS Deadlocks FROM sys.dm_exec_requests WHERE blocking_session_id <> 0;"
           $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
           if (-not $result) { Write-Output '[{"Deadlocks": 0}]' } else { Write-Output $result }
         } catch {
@@ -40,69 +44,72 @@
         }
       register: deadlocks
       ignore_errors: yes
-    - name: Get SQL Agent Job Activities
+
+    - name: Get SQL Agent Job Failures
       win_shell: |
         try {
-          $query = "SELECT j.job_id, j.name, j.enabled,
-               MAX(h.run_status) AS last_run_status
-               FROM msdb.dbo.sysjobs j
-               LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
-               WHERE h.step_id = 0
-               GROUP BY j.job_id, j.name, j.enabled;"
+          $query = "SELECT j.name, h.run_status FROM msdb.dbo.sysjobs j 
+                    JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id 
+                    WHERE h.step_id = 0 AND h.run_status NOT IN (1);"
           $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
         }
-      register: job_activities
+      register: job_failures
       ignore_errors: yes
+
     - name: Convert Outputs to JSON
       set_fact:
         db_space_fact: "{{ (db_space.stdout | from_json) if db_space.stdout is not none else [] }}"
         db_health_fact: "{{ (db_health.stdout | from_json) if db_health.stdout is not none else [] }}"
         deadlocks_fact: "{{ (deadlocks.stdout | from_json) if deadlocks.stdout is not none else {'Deadlocks': 0} }}"
-        job_activities_fact: "{{ (job_activities.stdout | from_json) if job_activities.stdout is not none else [] }}"
-    - name: Display Formatted Results
+        job_failures_fact: "{{ (job_failures.stdout | from_json) if job_failures.stdout is not none else [] }}"
+
+    - name: Display Formatted Results with Troubleshooting
       debug:
         msg: |
-          📊 Database Space Utilization:
-          {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
-           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          🩺 **Database Health Check**
+          {% for item in db_health_fact %}
+            - Database: {{ item.DatabaseName }} | Status: {{ item.Status }}
+            {% if item.Status != 'ONLINE' %}
+              🚨 Troubleshooting: The database is in {{ item.Status }} state. Check the SQL logs and event viewer.
+              Possible Fixes:
+                - Use DBCC CHECKDB to identify corruption.
+                - Check SQL Server service status.
+                - Restore from a backup if necessary.
+            {% endif %}
           {% endfor %}
-          🚨 Deadlocks:
-          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
-           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+
+          📊 **Database Space Utilization**
+          {% for item in db_space_fact %}
+            - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+            {% if item.SizeMB | int > 50000 %}
+              ⚠️ **Warning**: Large database detected. Consider adding storage or shrinking the database.
+              Possible Fixes:
+                - Check for unused indexes or large log files.
+                - Use `DBCC SHRINKDATABASE` cautiously.
+            {% endif %}
+          {% endfor %}
+
+          🚨 **Deadlock Check**
+          {% if deadlocks_fact.Deadlocks | int > 0 %}
+            - ❌ **Deadlocks detected: {{ deadlocks_fact.Deadlocks }}**. Investigate blocking queries.
+            Troubleshooting Steps:
+              1. Run `sp_who2` to find blocking sessions.
+              2. Use `DBCC TRACEON (1222, -1);` to capture deadlock details.
+              3. Optimize queries to reduce contention.
           {% else %}
-           - No deadlocks detected
+            - ✅ No deadlocks detected.
           {% endif %}
-          [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
-          🛠 SQL Server Agent Job Activities:
-          {% if job_activities_fact.name is defined and job_activities_fact.enabled is defined and job_activities_fact.last_run_status is defined %}
-           - Job: {{ job_activities_fact.name }} | Enabled: {{ job_activities_fact.enabled }} | Last Outcome: 
-             {% if job_activities_fact.last_run_status | default(-1) == 1 %}
-               Succeeded
-             {% elif job_activities_fact.last_run_status | default(-1) == 0 %}
-               Failed
-             {% elif job_activities_fact.last_run_status | default(-1) == 2 %}
-               Retry
-             {% elif job_activities_fact.last_run_status | default(-1) == 3 %}
-               Canceled
-             {% else %}
-               Unknown
-             {% endif %}
+
+          🔄 **SQL Agent Job Failures**
+          {% for job in job_failures_fact %}
+            - ❌ Job "{{ job.name }}" failed.
+            Troubleshooting Steps:
+              1. Check SQL Server Agent logs.
+              2. Look at `msdb.dbo.sysjobhistory` for error details.
+              3. Ensure job owner has necessary permissions.
           {% else %}
-            [❌] No job activities found or missing required fields.
-          {% endif %}
-          🩺 Database Health Check:
-          {% if db_health_fact is defined and db_health_fact | length > 0 %}
-            {% for item in db_health_fact | default([]) %}
-               - Database: {{ item.DatabaseName | default([]) }}
-                 - Status: {{ item.Status | default([]) }}
-                 - Active Requests: {{ item.ActiveRequests | default(0) }}
-                 - Active User Connections: {{ item.ActiveUserConnections | default(0) }}
-                 - Pending Requests: {{ item.PendingRequests | default(0) }}
-                 - CPU Queue Length: {{ item.CPUQueueLength | default(0) }}
-            {% endfor %}
-          {% else %}
-            [❌] No database health data available.
-          {% endif %}
+            - ✅ No job failures detected.
+          {% endfor %}
