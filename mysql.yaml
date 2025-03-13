@@ -4,8 +4,8 @@
   gather_facts: no
   vars:
     sql_instance: "10.112.0.10"
-    sql_user: "{{ansible_user}}"
-    sql_password: "{{ansible_password}}"
+    sql_user: "{{sql_user}}"
+    sql_password: "{{sql_password}}"
   tasks:
     - name: Get Database Space Utilization
       win_shell: |
@@ -65,20 +65,11 @@
       register: job_activities
       ignore_errors: yes
 
-    - name: Convert DB Space to JSON
+    - name: Convert Outputs to JSON
       set_fact:
         db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
-      
-    - name: Convert DB Health to JSON
-      set_fact:
         db_health_fact: "{{ db_health.stdout | default('[]') | from_json }}"
-      
-    - name: Convert Deadlocks to JSON
-      set_fact:
         deadlocks_fact: "{{ deadlocks.stdout | default('[{\"Deadlocks\": 0}]') | from_json }}"
-      
-    - name: Convert Job Activities to JSON
-      set_fact:
         job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
 
     - name: Display Formatted Results
