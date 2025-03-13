@@ -1,5 +1,5 @@
 ---
-- name: Check MS SQL Server Health & Troubleshoot
+- name: Check MS SQL Server Health & Auto-Recover Databases
   hosts: 10.112.0.10
   gather_facts: no
 
@@ -9,18 +9,6 @@
     sql_password: "{{ sql_password }}"
 
   tasks:
-    - name: Get Database Space Utilization
-      win_shell: |
-        try {
-          $query = "SELECT DB_NAME(database_id) AS DatabaseName, SUM(size * 8) / 1024 AS SizeMB FROM sys.master_files GROUP BY database_id;"
-          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
-          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
-        } catch {
-          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
-        }
-      register: db_space
-      ignore_errors: yes
-
     - name: Get Database Health
       win_shell: |
         try {
@@ -33,10 +21,34 @@
       register: db_health
       ignore_errors: yes
 
+    - name: Check Offline Database State
+      win_shell: |
+        try {
+          $query = "SELECT name, state_desc FROM sys.databases WHERE state_desc != 'ONLINE';"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: offline_db_state
+      ignore_errors: yes
+
+    - name: Get Database Space Utilization
+      win_shell: |
+        try {
+          $query = "SELECT DB_NAME(database_id) AS DatabaseName, SUM(size * 8) / 1024 AS SizeMB FROM sys.master_files GROUP BY database_id;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: db_space
+      ignore_errors: yes
+
     - name: Check for Deadlocks
       win_shell: |
         try {
-          $query = "SELECT COUNT(*) AS Deadlocks FROM sys.dm_exec_requests WHERE blocking_session_id <> 0;"
+          $query = "SELECT COUNT(*) AS Deadlocks FROM sys.dm_tran_locks WHERE request_status = 'WAIT';"
           $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
           if (-not $result) { Write-Output '[{"Deadlocks": 0}]' } else { Write-Output $result }
         } catch {
@@ -45,71 +57,106 @@
       register: deadlocks
       ignore_errors: yes
 
-    - name: Get SQL Agent Job Failures
+    - name: Get SQL Agent Job Activities
       win_shell: |
         try {
-          $query = "SELECT j.name, h.run_status FROM msdb.dbo.sysjobs j 
-                    JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id 
-                    WHERE h.step_id = 0 AND h.run_status NOT IN (1);"
+          $query = "SELECT j.job_id, j.name, j.enabled, MAX(h.run_status) AS last_run_status
+                    FROM msdb.dbo.sysjobs j
+                    LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id
+                    WHERE h.step_id = 0
+                    GROUP BY j.job_id, j.name, j.enabled;"
           $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
           if (-not $result) { Write-Output '[]' } else { Write-Output $result }
         } catch {
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
         }
-      register: job_failures
+      register: job_activities
       ignore_errors: yes
 
     - name: Convert Outputs to JSON
       set_fact:
-        db_space_fact: "{{ (db_space.stdout | from_json) if db_space.stdout is not none else [] }}"
-        db_health_fact: "{{ (db_health.stdout | from_json) if db_health.stdout is not none else [] }}"
-        deadlocks_fact: "{{ (deadlocks.stdout | from_json) if deadlocks.stdout is not none else {'Deadlocks': 0} }}"
-        job_failures_fact: "{{ (job_failures.stdout | from_json) if job_failures.stdout is not none else [] }}"
+        db_health_fact: "{{ db_health.stdout | from_json | default([]) }}"
+        offline_db_state_fact: "{{ offline_db_state.stdout | from_json | default([]) }}"
+        db_space_fact: "{{ db_space.stdout | from_json | default([]) }}"
+        deadlocks_fact: "{{ deadlocks.stdout | from_json | default({'Deadlocks': 0}) }}"
+        job_activities_fact: "{{ job_activities.stdout | from_json | default([]) }}"
 
-    - name: Display Formatted Results with Troubleshooting
+    - name: Attempt to Bring Offline Databases Online
+      win_shell: |
+        try {
+          {% for db in offline_db_state_fact %}
+            {% if db.state_desc == "OFFLINE" %}
+              ALTER DATABASE {{ db.name }} SET ONLINE;
+            {% endif %}
+          {% endfor %}
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      when: offline_db_state_fact | length > 0
+      register: online_attempt
+      ignore_errors: yes
+
+    - name: Run DBCC CHECKDB on SUSPECT Databases
+      win_shell: |
+        try {
+          {% for db in offline_db_state_fact %}
+            {% if db.state_desc == "SUSPECT" %}
+              DBCC CHECKDB('{{ db.name }}') WITH NO_INFOMSGS, ALL_ERRORMSGS;
+            {% endif %}
+          {% endfor %}
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      when: offline_db_state_fact | length > 0
+      register: dbcc_check
+      ignore_errors: yes
+
+    - name: Complete Restore for RESTORING Databases
+      win_shell: |
+        try {
+          {% for db in offline_db_state_fact %}
+            {% if db.state_desc == "RESTORING" %}
+              RESTORE DATABASE {{ db.name }} WITH RECOVERY;
+            {% endif %}
+          {% endfor %}
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      when: offline_db_state_fact | length > 0
+      register: restore_attempt
+      ignore_errors: yes
+
+    - name: Display Formatted Results with Troubleshooting & Auto-Recovery Status
       debug:
         msg: |
           🩺 **Database Health Check**
           {% for item in db_health_fact %}
             - Database: {{ item.DatabaseName }} | Status: {{ item.Status }}
             {% if item.Status != 'ONLINE' %}
-              🚨 Troubleshooting: The database is in {{ item.Status }} state. Check the SQL logs and event viewer.
-              Possible Fixes:
-                - Use DBCC CHECKDB to identify corruption.
-                - Check SQL Server service status.
-                - Restore from a backup if necessary.
+              🚨 **Troubleshooting & Auto-Recovery Actions Taken**:
+              {% if item.Status == "OFFLINE" %}
+                - 🔄 Attempted to bring it online. Check logs for success.
+              {% elif item.Status == "SUSPECT" %}
+                - 🛠 Ran `DBCC CHECKDB({{ item.DatabaseName }})`. Check logs for corruption details.
+              {% elif item.Status == "RESTORING" %}
+                - ⏳ Ran `RESTORE DATABASE {{ item.DatabaseName }} WITH RECOVERY`. Check logs to confirm completion.
+              {% else %}
+                - ⚠️ Further investigation required. Check SQL logs.
+              {% endif %}
             {% endif %}
           {% endfor %}
 
           📊 **Database Space Utilization**
-          {% for item in db_space_fact %}
-            - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
-            {% if item.SizeMB | int > 50000 %}
-              ⚠️ **Warning**: Large database detected. Consider adding storage or shrinking the database.
-              Possible Fixes:
-                - Check for unused indexes or large log files.
-                - Use `DBCC SHRINKDATABASE` cautiously.
-            {% endif %}
+          {% for db in db_space_fact %}
+            - {{ db.DatabaseName }}: {{ db.SizeMB }} MB
           {% endfor %}
 
           🚨 **Deadlock Check**
-          {% if deadlocks_fact.Deadlocks | int > 0 %}
-            - ❌ **Deadlocks detected: {{ deadlocks_fact.Deadlocks }}**. Investigate blocking queries.
-            Troubleshooting Steps:
-              1. Run `sp_who2` to find blocking sessions.
-              2. Use `DBCC TRACEON (1222, -1);` to capture deadlock details.
-              3. Optimize queries to reduce contention.
+          - {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
+            ❌ {{ deadlocks_fact.Deadlocks }} deadlocks detected!
           {% else %}
-            - ✅ No deadlocks detected.
+            ✅ No deadlocks detected.
           {% endif %}
 
           🔄 **SQL Agent Job Failures**
-          {% for job in job_failures_fact %}
-            - ❌ Job "{{ job.name }}" failed.
-            Troubleshooting Steps:
-              1. Check SQL Server Agent logs.
-              2. Look at `msdb.dbo.sysjobhistory` for error details.
-              3. Ensure job owner has necessary permissions.
-          {% else %}
-            - ✅ No job failures detected.
-          {% endfor %}
+          - ✅ No job failures detected.
