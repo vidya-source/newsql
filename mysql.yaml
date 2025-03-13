@@ -1,5 +1,5 @@
 ---
-- name: Check MS SQL Server Health & Auto-Recover Databases
+- name: Check MS SQL Server Health & Monitor Issues
   hosts: 10.112.0.10
   gather_facts: no
 
@@ -19,18 +19,6 @@
           Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
         }
       register: db_health
-      ignore_errors: yes
-
-    - name: Check Offline Database State
-      win_shell: |
-        try {
-          $query = "SELECT name, state_desc FROM sys.databases WHERE state_desc != 'ONLINE';"
-          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
-          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
-        } catch {
-          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
-        }
-      register: offline_db_state
       ignore_errors: yes
 
     - name: Get Database Space Utilization
@@ -76,72 +64,31 @@
     - name: Convert Outputs to JSON
       set_fact:
         db_health_fact: "{{ db_health.stdout | from_json | default([]) }}"
-        offline_db_state_fact: "{{ offline_db_state.stdout | from_json | default([]) }}"
         db_space_fact: "{{ db_space.stdout | from_json | default([]) }}"
         deadlocks_fact: "{{ deadlocks.stdout | from_json | default({'Deadlocks': 0}) }}"
         job_activities_fact: "{{ job_activities.stdout | from_json | default([]) }}"
 
-    - name: Attempt to Bring Offline Databases Online
-      win_shell: |
-        try {
-          {% for db in offline_db_state_fact %}
-            {% if db.state_desc == "OFFLINE" %}
-              ALTER DATABASE {{ db.name }} SET ONLINE;
-            {% endif %}
-          {% endfor %}
-        } catch {
-          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
-        }
-      when: offline_db_state_fact | length > 0
-      register: online_attempt
-      ignore_errors: yes
-
-    - name: Run DBCC CHECKDB on SUSPECT Databases
-      win_shell: |
-        try {
-          {% for db in offline_db_state_fact %}
-            {% if db.state_desc == "SUSPECT" %}
-              DBCC CHECKDB('{{ db.name }}') WITH NO_INFOMSGS, ALL_ERRORMSGS;
-            {% endif %}
-          {% endfor %}
-        } catch {
-          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
-        }
-      when: offline_db_state_fact | length > 0
-      register: dbcc_check
-      ignore_errors: yes
-
-    - name: Complete Restore for RESTORING Databases
-      win_shell: |
-        try {
-          {% for db in offline_db_state_fact %}
-            {% if db.state_desc == "RESTORING" %}
-              RESTORE DATABASE {{ db.name }} WITH RECOVERY;
-            {% endif %}
-          {% endfor %}
-        } catch {
-          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
-        }
-      when: offline_db_state_fact | length > 0
-      register: restore_attempt
-      ignore_errors: yes
-
-    - name: Display Formatted Results with Troubleshooting & Auto-Recovery Status
+    - name: Display Formatted Results with Troubleshooting
       debug:
         msg: |
           🩺 **Database Health Check**
           {% for item in db_health_fact %}
             - Database: {{ item.DatabaseName }} | Status: {{ item.Status }}
             {% if item.Status != 'ONLINE' %}
-              🚨 **Troubleshooting & Auto-Recovery Actions Taken**:
+              🚨 **Issue Detected**: Database {{ item.DatabaseName }} is in **{{ item.Status }}** state.
+              🔎 **Recommended Actions**:
               {% if item.Status == "OFFLINE" %}
-                - 🔄 Attempted to bring it online. Check logs for success.
+                - Check SQL logs and event viewer for errors.
+                - Review last known issue before it went offline.
+                - Verify that disk space and memory are sufficient.
               {% elif item.Status == "SUSPECT" %}
-                - 🛠 Ran `DBCC CHECKDB({{ item.DatabaseName }})`. Check logs for corruption details.
+                - Investigate possible database corruption.
+                - Check the error logs for database recovery failures.
               {% elif item.Status == "RESTORING" %}
-                - ⏳ Ran `RESTORE DATABASE {{ item.DatabaseName }} WITH RECOVERY`. Check logs to confirm completion.
+                - Verify if a restore operation is in progress.
+                - Check if manual intervention is needed to complete the restore.
               {% else %}
-                - ⚠️ Further investigation required. Check SQL logs.
+                - Further investigation required.
               {% endif %}
             {% endif %}
           {% endfor %}
