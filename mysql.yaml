@@ -87,11 +87,25 @@
         job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
         disk_space_fact: "{{ disk_space.stdout | default('[]') | from_json }}"
         sql_errors_fact: "{{ sql_errors.stdout | default('[]') | from_json }}"
+        
+    - name: Check for Offline Databases
+      set_fact:
+        has_offline_db: false
+        offline_db_names: []
+      no_log: true
+
+    - name: Mark Offline Databases
+      set_fact:
+        has_offline_db: true
+        offline_db_names: "{{ offline_db_names + [item.DatabaseName] }}"
+      when: item.Status == "OFFLINE"
+      with_items: "{{ db_health_fact }}"
+      no_log: true
 
     - name: Display SQL Server Issues and Troubleshooting Suggestions
       debug:
         msg: |
-          ⚠️ **SQL Server Errors Detected:**
+          ⚠️ **SQL Server Issues Detected:**
           {% if sql_errors_fact is defined and sql_errors_fact | length > 0 %}
             {% for error in sql_errors_fact %}
               - **Timestamp:** {{ error.logdate | default("N/A") }}
@@ -118,17 +132,10 @@
             {% endfor %}
           {% endif %}
           
-          {% set offline_databases = [] %}
-          {% for db in db_health_fact %}
-            {% if db.Status == "OFFLINE" %}
-              {% set offline_databases = offline_databases + [db] %}
-            {% endif %}
-          {% endfor %}
-          
-          {% if offline_databases | length > 0 %}
-            {% for db in offline_databases %}
+          {% if has_offline_db %}
+            {% for db in db_health_fact %}
+              {% if db.Status == "OFFLINE" %}
               🚨 **CRITICAL: Database {{ db.DatabaseName }} is OFFLINE!**
-              - **Status:** {{ db.Status }}
               - **Possible reasons:**
                 - Manually taken offline
                 - Storage or corruption issues
@@ -136,6 +143,7 @@
               - **Suggested Fix:**
                 - `ALTER DATABASE {{ db.DatabaseName }} SET ONLINE;`
                 - Check storage space and error logs
+              {% endif %}
             {% endfor %}
           {% elif sql_errors_fact | length == 0 %}
             ✅ No critical errors found in the SQL Server logs.
