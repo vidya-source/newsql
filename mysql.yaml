@@ -116,7 +116,28 @@
                 - Review the error message and check SQL documentation for resolution.
               {% endif %}
             {% endfor %}
-          {% else %}
+          {% endif %}
+          
+          {% set offline_databases = [] %}
+          {% for db in db_health_fact %}
+            {% if db.Status == "OFFLINE" %}
+              {% set offline_databases = offline_databases + [db] %}
+            {% endif %}
+          {% endfor %}
+          
+          {% if offline_databases | length > 0 %}
+            {% for db in offline_databases %}
+              🚨 **CRITICAL: Database {{ db.DatabaseName }} is OFFLINE!**
+              - **Status:** {{ db.Status }}
+              - **Possible reasons:**
+                - Manually taken offline
+                - Storage or corruption issues
+                - SQL Server restart
+              - **Suggested Fix:**
+                - `ALTER DATABASE {{ db.DatabaseName }} SET ONLINE;`
+                - Check storage space and error logs
+            {% endfor %}
+          {% elif sql_errors_fact | length == 0 %}
             ✅ No critical errors found in the SQL Server logs.
           {% endif %}
 
