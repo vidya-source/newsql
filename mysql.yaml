@@ -69,7 +69,7 @@
       set_fact:
         db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
         db_health_fact: "{{ db_health.stdout | default('[]') | from_json }}"
-        deadlocks_fact: "{{ deadlocks.stdout | default('[{"Deadlocks": 0}]') | from_json }}"
+        deadlocks_fact: "{{ deadlocks.stdout | default('[{\"Deadlocks\": 0}]') | from_json }}"
         job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
 
     - name: Display Formatted Results
