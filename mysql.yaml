@@ -151,8 +151,8 @@
             [ℹ️] No errors found in SQL Server logs or error log data not available.
           {% endif %}
           
-   - name: Display SQL Server Issues and Troubleshooting Suggestions
-     debug:
+    - name: Display SQL Server Issues and Troubleshooting Suggestions
+      debug:
         msg: |
           🩺 **Database Health Check:**
           {% if db_health_fact is defined and db_health_fact | length > 0 %}
