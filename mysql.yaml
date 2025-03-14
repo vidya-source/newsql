@@ -220,6 +220,18 @@
           {% else %}
             ✅ No deadlocks detected.
           {% endif %}
+    
+          🧪 **Test Error Check:**
+          {% if test_error is defined and test_error.stdout is defined %}
+            {% if test_error.stdout is search('Test error generated successfully') %}
+              🔔 Test error was successfully generated for monitoring validation.
+              - This is an expected test condition to verify alert systems.
+            {% else %}
+              ❓ Test error generation status unknown.
+            {% endif %}
+          {% else %}
+            ❌ No test error data available.
+          {% endif %}
           
           📜 **Error Log Analysis:**
           {% if error_logs_fact is defined and error_logs_fact|length > 0 %}
