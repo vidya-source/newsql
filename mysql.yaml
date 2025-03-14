@@ -286,3 +286,9 @@
               🚨 **ALERT: {{ port_status[0].Message }}**
               - Suggested Fix:
                 - Verify SQL Server service
+                - Check firewall rules
+            - Confirm SQL Server is configured to listen on the expected port
+        {% endif %}
+      {% else %}
+        ❌ Unable to check SQL Server port status
+      {% endif %}
