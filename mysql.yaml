@@ -66,6 +66,15 @@
         }
       register: job_activities
       ignore_errors: yes
+    - name: Generate SQL Server Error for Testing
+      win_shell: |
+        try {
+          Invoke-Sqlcmd -Query "RAISERROR ('Test error for Ansible detection', 16, 1) WITH LOG;" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate
+        } catch {
+          Write-Output '[{"Error": "Failed to generate test error"}]'
+        }
+      register: test_error
+      ignore_errors: yes
  
     - name: Check SQL Server Error Log for Issues
       win_shell: |
