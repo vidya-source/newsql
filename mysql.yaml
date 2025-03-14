@@ -283,3 +283,8 @@
             {% if port_status[0].Status == "Success" %}
               ✅ {{ port_status[0].Message }}
             {% else %}
+              🚨 {{ port_status[0].Message }}
+            {% endif %}
+          {% else %}
+            ❌ Port check data unavailable
+          {% endif %}
