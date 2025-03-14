@@ -70,11 +70,18 @@
       win_shell: |
         try {
           Invoke-Sqlcmd -Query "RAISERROR ('Test error for Ansible detection', 16, 1) WITH LOG;" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate
+          Write-Output '[{"Success": "Test error generated successfully"}]'
         } catch {
           Write-Output '[{"Error": "Failed to generate test error"}]'
         }
       register: test_error
       ignore_errors: yes
+      failed_when: false
+    
+    - name: Display Test Error Result
+      debug:
+        msg: "{{ test_error.stdout }}"
+
  
     - name: Check SQL Server Error Log for Issues
       win_shell: |
