@@ -66,6 +66,7 @@
         }
       register: job_activities
       ignore_errors: yes
+
     - name: Generate SQL Server Error for Testing
       win_shell: |
         try {
@@ -81,7 +82,6 @@
     - name: Display Test Error Result
       debug:
         msg: "{{ test_error.stdout }}"
-
  
     - name: Check SQL Server Error Log for Issues
       win_shell: |
@@ -253,3 +253,36 @@
           {% else %}
             ✅ No errors found in SQL Server logs.
           {% endif %}
+
+    - name: Check if SQL Server port is accessible
+      win_shell: |
+        try {
+          $port = 1433  # Default SQL Server port
+          $connection = New-Object System.Net.Sockets.TcpClient
+          $result = $connection.BeginConnect("{{ sql_instance }}", $port, $null, $null)
+          $wait = $result.AsyncWaitHandle.WaitOne(1000, $false)
+          if ($wait) {
+            $connection.EndConnect($result)
+            Write-Output '[{"Status": "Success", "Message": "SQL Server port is accessible"}]'
+          } else {
+            Write-Output '[{"Status": "Failed", "Message": "SQL Server port is not accessible"}]'
+          }
+          $connection.Close()
+        } catch {
+          Write-Output '[{"Status": "Error", "Message": "' + $_.Exception.Message + '"}]'
+        }
+      register: port_check
+      ignore_errors: yes
+    
+    - name: Display SQL Server Port Check Results
+      debug:
+        msg: |
+          📡 SQL Server Port Check:
+          {% if port_check.stdout is defined %}
+            {% set port_status = port_check.stdout | from_json %}
+            {% if port_status[0].Status == "Success" %}
+              ✅ {{ port_status[0].Message }}
+            {% else %}
+              🚨 **ALERT: {{ port_status[0].Message }}**
+              - Suggested Fix:
+                - Verify SQL Server service
