@@ -6,6 +6,7 @@
     sql_instance: "10.112.0.10"
     sql_user: "{{ sql_user }}"
     sql_password: "{{ sql_password }}"
+    sql_port: "{{sql_port}}"
  
   tasks:
     - name: Get Disk Space Utilization
@@ -257,7 +258,7 @@
     - name: Check if SQL Server port is accessible
       win_shell: |
         try {
-          $port = 1433  # Default SQL Server port
+          $port = "{{sql_port}}"  # Default SQL Server port
           $connection = New-Object System.Net.Sockets.TcpClient
           $result = $connection.BeginConnect("{{ sql_instance }}", $port, $null, $null)
           $wait = $result.AsyncWaitHandle.WaitOne(1000, $false)
