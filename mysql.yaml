@@ -151,25 +151,30 @@
             [ℹ️] No errors found in SQL Server logs or error log data not available.
           {% endif %}
           
-    - name: Display SQL Server Issues and Troubleshooting Suggestions
-      debug:
+   - name: Display SQL Server Issues and Troubleshooting Suggestions
+     debug:
         msg: |
           🩺 **Database Health Check:**
           {% if db_health_fact is defined and db_health_fact | length > 0 %}
             {% for item in db_health_fact %}
-              - Database: {{ item.DatabaseName }}
-                - Status: {{ item.Status }}
-              {% if item.Status == "OFFLINE" %}
-                🚨 **ALERT: Database {{ item.DatabaseName }} is OFFLINE!**
-                - Possible reasons:
-                  - Manually taken offline
-                  - Storage or corruption issues
-                  - SQL Server restart
-                - Suggested Fix:
-                  - `ALTER DATABASE {{ item.DatabaseName }} SET ONLINE;`
-                  - Check storage space and error logs
+              {% if item.Status != "ONLINE" %}
+                - Database: {{ item.DatabaseName }}
+                  - Status: {{ item.Status }}
+                {% if item.Status == "OFFLINE" %}
+                  🚨 **ALERT: Database {{ item.DatabaseName }} is OFFLINE!**
+                  - Possible reasons:
+                    - Manually taken offline
+                    - Storage or corruption issues
+                    - SQL Server restart
+                  - Suggested Fix:
+                    - `ALTER DATABASE {{ item.DatabaseName }} SET ONLINE;`
+                    - Check storage space and error logs
+                {% endif %}
               {% endif %}
             {% endfor %}
+            {% if db_health_fact | selectattr('Status', 'ne', 'ONLINE') | list | length == 0 %}
+              ✅ All databases are ONLINE.
+            {% endif %}
           {% else %}
             ❌ No database health data available.
           {% endif %}
@@ -185,6 +190,8 @@
                 - Review database file growth
                 - Consider adding storage
             {% endif %}
+          {% else %}
+            ✅ All drives have sufficient disk space.
           {% endfor %}
           
           🔒 **Deadlock Check:**
@@ -194,12 +201,16 @@
               - Review transaction isolation levels
               - Optimize queries with high lock duration
               - Consider using NOLOCK hint for read-only operations
+          {% else %}
+            ✅ No deadlocks detected.
           {% endif %}
           
           📜 **Error Log Analysis:**
           {% if error_logs_fact is defined and error_logs_fact|length > 0 %}
+            {% set error_found = false %}
             {% for item in error_logs_fact %}
               {% if item.text is defined and item.text|lower is search('severity: [1-9][0-9]') %}
+                {% set error_found = true %}
                 🚨 **ALERT: High severity error detected!**
                 - {{ item.text|truncate(150) }}
                 - Time: {{ item.logdate }}
@@ -208,4 +219,9 @@
                   - Check for related issues in Windows Event Log
               {% endif %}
             {% endfor %}
+            {% if not error_found %}
+              ✅ No critical errors found in logs.
+            {% endif %}
+          {% else %}
+            ✅ No errors found in SQL Server logs.
           {% endif %}
