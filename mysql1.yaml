@@ -151,9 +151,16 @@
 
     - name: Get Disk Space Information
       win_shell: |
-        Get-WmiObject Win32_LogicalDisk | 
-        Select-Object DeviceID, @{Name="Size";Expression={$_.Size}}, @{Name="FreeSpace";Expression={$_.FreeSpace}} | 
-        ConvertTo-Json
+        $disks = @()
+        Get-WmiObject Win32_LogicalDisk | ForEach-Object {
+          $disks += @{
+            "DeviceID" = $_.DeviceID;
+            "Size" = [math]::Round($_.Size/1GB, 2);
+            "FreeSpace" = [math]::Round($_.FreeSpace/1GB, 2);
+            "FreePercent" = [math]::Round(($_.FreeSpace/$_.Size)*100, 2)
+          }
+        }
+        ConvertTo-Json -InputObject $disks -Depth 3 -Compress
       register: disk_space
       ignore_errors: yes
 
@@ -170,15 +177,13 @@
       debug:
         msg: |
           💾 Disk Space:
-          {% if disk_space.stdout is defined %}
-            {% set disk_data = disk_space.stdout | from_json %}
+          {% set disk_data = (disk_space.stdout | default('[]') | from_json) %}
+          {% if disk_data is not string and disk_data | length > 0 %}
             {% for disk in disk_data %}
-              - Volume: {{ disk.DeviceID }} | Size: {{ (disk.Size | int / 1073741824) | round(2) }} GB | Free: {{ (disk.FreeSpace | int / 1073741824) | round(2) }} GB ({{ ((disk.FreeSpace | float / disk.Size | float) * 100) | round(2) }}%)
-            {% else %}
-              - No valid disk space data available.
+              - Volume: {{ disk.DeviceID }} | Size: {{ disk.Size }} GB | Free: {{ disk.FreeSpace }} GB ({{ disk.FreePercent }}%)
             {% endfor %}
           {% else %}
-            - No disk space data available.
+            - No valid disk space data available.
           {% endif %}
  
           📊 Database Space Utilization:
