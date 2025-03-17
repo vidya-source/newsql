@@ -117,7 +117,6 @@
           {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
             - Drive {{ item.DeviceID }}: Free {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB / Total {{ (item.Size | int / 1073741824) | round(2) }} GB
           {% else %}
-            - No valid disk space data available.
           {% endfor %}
           
  
