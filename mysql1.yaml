@@ -281,10 +281,9 @@
                   - Review database file growth
                   - Consider adding storage
               {% endif %}
-            {% endfor %}
-          {% else %}
+            {% else %}
             ✅ All drives have sufficient disk space.
-          {% endif %}
+          {% endfor %}
           
           🔒 **Deadlock Check:**
           {% if (deadlocks_fact.Deadlocks|default(0)|int) > 0 %}
