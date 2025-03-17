@@ -281,8 +281,7 @@
                   - Review database file growth
                   - Consider adding storage
               {% endif %}
-            {% endfor %}
-          {% else %}
+            {% else %}
             ✅ All drives have sufficient disk space.
           {% endfor %}
           
