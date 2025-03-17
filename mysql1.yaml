@@ -239,6 +239,7 @@
             [ℹ️] No errors found in SQL Server logs or error log data not available.
           {% endif %}
           
+    
     - name: Display SQL Server Issues and Troubleshooting Suggestions
       debug:
         msg: |
@@ -291,4 +292,7 @@
             - Suggested Fix:
               - Review transaction isolation levels
               - Optimize queries with high lock duration
-              -
+              - Check application transaction handling
+          {% else %}
+            ✅ No deadlocks detected.
+          {% endif %}
