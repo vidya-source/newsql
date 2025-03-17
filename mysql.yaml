@@ -135,23 +135,26 @@
           {% else %}
            - No deadlocks detected
           {% endif %}
-          
           [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
           🛠 SQL Server Agent Job Activities:
           {% if job_activities_fact | length > 0 %}
             {% for job in job_activities_fact %}
-              - Job: {{ job.name }} | Enabled: {{ job.enabled }} | Last Outcome: 
-                {% if job.last_run_status | default(-1) == 1 %}
-                  Succeeded
-                {% elif job.last_run_status | default(-1) == 0 %}
-                  Failed
-                {% elif job.last_run_status | default(-1) == 2 %}
-                  Retry
-                {% elif job.last_run_status | default(-1) == 3 %}
-                  Canceled
-                {% else %}
-                  Unknown
-                {% endif %}
+              {% if job is mapping %}
+                - Job: {{ job.name | default('Unknown') }} | Enabled: {{ job.enabled | default('Unknown') }} | Last Outcome: 
+                  {% if job.last_run_status | default(-1) == 1 %}
+                    Succeeded
+                  {% elif job.last_run_status | default(-1) == 0 %}
+                    Failed
+                  {% elif job.last_run_status | default(-1) == 2 %}
+                    Retry
+                  {% elif job.last_run_status | default(-1) == 3 %}
+                    Canceled
+                  {% else %}
+                    Unknown
+                  {% endif %}
+              {% else %}
+                - Job: Unknown | Details not available
+              {% endif %}
             {% endfor %}
           {% else %}
             [❌] No job activities found or missing required fields.
