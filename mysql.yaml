@@ -95,6 +95,11 @@
         }
       register: error_logs
       ignore_errors: yes
+    - name: Get Disk Space Information
+      win_shell: |
+        Get-WmiObject Win32_LogicalDisk | Select-Object DeviceID, @{Name="Size";Expression={$_.Size}}, @{Name="FreeSpace";Expression={$_.FreeSpace}} | ConvertTo-Json -Compress
+      register: disk_space
+      ignore_errors: yes
  
     - name: Convert Outputs to JSON
       set_fact:
@@ -109,11 +114,12 @@
       debug:
         msg: |
           💾 Disk Space:
-          {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item %}
-            - Volume: {{ item.DeviceID }} | Free Space: {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB
+          {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
+            - Drive {{ item.DeviceID }}: Free {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB / Total {{ (item.Size | int / 1073741824) | round(2) }} GB
           {% else %}
             - No valid disk space data available.
           {% endfor %}
+          
  
           📊 Database Space Utilization:
           {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
