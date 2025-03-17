@@ -306,3 +306,10 @@
           {% else %}
             ✅ No deadlocks detected.
           {% endif %}
+          🧪 **Test Error Check:**
+          {% if test_error is defined and test_error.stdout is defined %}
+            Test error was successfully generated for monitoring validation.
+            - This is an expected test condition to verify alert systems.
+          {% else %}
+            ❓ No test error data available.
+          {% endif %}
