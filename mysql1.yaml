@@ -238,7 +238,8 @@
             [ℹ️] No errors found in SQL Server logs or error log data not available.
           {% endif %}
           
-    
+
+
     - name: Display SQL Server Issues and Troubleshooting Suggestions
       debug:
         msg: |
@@ -270,19 +271,29 @@
           💾 **Disk Space Check:**
           {% if disk_space.stdout is defined %}
             {% set disk_data = disk_space.stdout | from_json %}
-            {% for disk in disk_data %}
-              {% set free_pct = ((disk.FreeSpace | float / disk.Size | float) * 100) | round(2) %}
-              {% if free_pct < 10 %}
-                🚨 **ALERT: Low disk space on {{ disk.DeviceID }}!**
-                - {{ free_pct }}% free ({{ (disk.FreeSpace | int / 1073741824) | round(2) }} GB)
-                - Suggested Fix:
-                  - Clean up log files, temp files
-                  - Review database file growth
-                  - Consider adding storage
+            {% if disk_data is iterable and (disk_data is not string) and (disk_data | length > 0) %}
+              {% set low_space_found = false %}
+              {% for disk in disk_data %}
+                {% if disk.FreePercent is defined and disk.Size is defined %}
+                  {% if disk.FreePercent < 10 %}
+                    {% set low_space_found = true %}
+                    🚨 **ALERT: Low disk space on {{ disk.DeviceID }}!**
+                    - {{ disk.FreePercent }}% free ({{ disk.FreeSpace }} GB)
+                    - Suggested Fix:
+                      - Clean up log files, temp files
+                      - Review database file growth
+                      - Consider adding storage
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+              {% if not low_space_found %}
+                ✅ All drives have sufficient disk space.
               {% endif %}
-            {% endfor %}
+            {% else %}
+              ❓ Disk space data format is invalid.
+            {% endif %}
           {% else %}
-            ✅ All drives have sufficient disk space.
+            ❓ No disk space data available.
           {% endif %}
           
           🔒 **Deadlock Check:**
