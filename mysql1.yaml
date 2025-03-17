@@ -190,12 +190,6 @@
           {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
            - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
           {% endfor %}
-          🚨 Deadlocks:
-          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
-           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
-          {% else %}
-           - No deadlocks detected
-          {% endif %}
           [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
           🛠 SQL Server Agent Job Activities:
           {% if job_activities_fact.name is defined and job_activities_fact.enabled is defined and job_activities_fact.last_run_status is defined %}
@@ -227,7 +221,12 @@
           {% else %}
             [❌] No database health data available.
           {% endif %}
-          
+          🚨 Deadlocks:
+          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
+           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% else %}
+           - No deadlocks detected
+          {% endif %}
           📜 SQL Server Error Log:
           {% if error_logs_fact is defined and error_logs_fact | length > 0 %}
             {% for item in error_logs_fact | default([]) %}
