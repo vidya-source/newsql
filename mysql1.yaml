@@ -1,50 +1,289 @@
 ---
-- name: Connect to MySQL Server
-  hosts: localhost
-  become: yes
+- name: SQL Server Health Check and Maintenance
+  hosts: "{{ inventory_hostname }}"
+  gather_facts: no
   vars:
-    mysql_root_password: "mysqlAutomation"
-    mysql_user: "mysqlauto"
-    mysql_password: "mysqlAutomation"
-    mysql_host: "10.112.0.11"
-  
+    sql_instance: "{{ inventory_hostname }}"
+    sql_user: "{{ sql_user }}"
+    sql_password: "{{ sql_password }}"
+    sql_port: 1433
+
   tasks:
-    - name: Install MySQL and dependencies
-      apt:
-        name: "{{ item }}"
-        state: present
-      with_items:
-        - mysql-server
-        - python3-mysqldb
-        - python3-pip
-
-    - name: Ensure MySQL service is running
-      service:
-        name: mysql
-        state: started
-        enabled: yes
-
-    - name: Create a MySQL user
-      community.mysql.mysql_user:
-        name: "{{ mysql_user }}"
-        password: "{{ mysql_password }}"
-        priv: "*.*:ALL"
-        host: "%"
-        state: present
-        login_user: root
-        login_password: "{{ mysql_root_password }}"
-
-    - name: Create a MySQL database
-      community.mysql.mysql_db:
-        name: test_db
-        state: present
-        login_user: root
-        login_password: "{{ mysql_root_password }}"
-
-    - name: Test MySQL Connection
-      command: mysql -u {{ mysql_user }} -p{{ mysql_password }} -e "SHOW DATABASES;"
-      register: mysql_output
-
-    - name: Display MySQL Databases
+    - name: Check if host is reachable
+      win_shell: |
+        try {
+          $targetHost = "{{ inventory_hostname }}"
+          $pingResult = Test-Connection -ComputerName $targetHost -Count 1 -Quiet
+          if ($pingResult) {
+            Write-Output '[{"Status": "Success", "Message": "Host is up and reachable"}]'
+          } else {
+            Write-Output '[{"Status": "Failed", "Message": "Host is not reachable"}]'
+          }
+        } catch {
+          Write-Output '[{"Status": "Error", "Message": "' + $_.Exception.Message + '"}]'
+        }
+      register: host_check
+      ignore_errors: yes
+    - name: Display Host Reachability Results
       debug:
-        msg: "{{ mysql_output.stdout }}"
+        msg: |
+          🖥️ Host Status Check:
+          {% if host_check.stdout is defined %}
+            {% set host_status = host_check.stdout | from_json %}
+            {% if host_status[0].Status == "Success" %}
+              ✅ {{ host_status[0].Message }}
+            {% else %}
+              ❌ {{ host_status[0].Message }}
+            {% endif %}
+          {% else %}
+            ❓ Unable to determine host status
+          {% endif %}
+    - name: Check if MS SQL Port is Open
+      win_shell: |
+        $tcpConnection = Get-NetTCPConnection -LocalPort {{ sql_port }} -State Listen -ErrorAction SilentlyContinue
+        if ($tcpConnection) {
+          Write-Output '{"SQLPortStatus": "UP"}'
+        } else {
+          Write-Output '{"SQLPortStatus": "DOWN"}'
+        }
+      register: sql_port_status
+      ignore_errors: yes
+
+    - name: Convert SQL Port Status Output to JSON
+      set_fact:
+        sql_port_status_fact: "{{ sql_port_status.stdout | default('{}') | from_json }}"
+
+    - name: Display SQL Port Status
+      debug:
+        msg: |
+          🔌 **SQL Server Port Check ({{ sql_port }})**:
+          {% if sql_port_status_fact.SQLPortStatus is defined and sql_port_status_fact.SQLPortStatus == 'UP' %}
+            ✅ SQL Server is listening on port {{ sql_port }}.
+          {% else %}
+            🚨 **ALERT: SQL Server port {{ sql_port }} is DOWN!**
+            - Possible reasons:
+              - SQL Server is stopped
+              - Firewall is blocking the port
+              - Network issues
+            - Suggested Fix:
+              - Ensure SQL Server service is running
+              - Check firewall and network settings
+              - Verify SQL Server configuration (`SQL Server Configuration Manager`)
+          {% endif %}
+
+     
+ 
+    - name: Get Database Space Utilization
+      win_shell: |
+        try {
+          $query = "SELECT DB_NAME(database_id) AS DatabaseName, SUM(size * 8) / 1024 AS SizeMB FROM sys.master_files GROUP BY database_id;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "Failed to retrieve database space info"}]'
+        }
+      register: db_space
+      ignore_errors: yes
+ 
+    - name: Get Database Health
+      win_shell: |
+        try {
+          $query = "SELECT db.name AS DatabaseName, db.state_desc AS Status, (SELECT COUNT(*) FROM sys.dm_exec_requests r WHERE r.database_id = db.database_id) AS ActiveRequests, (SELECT COUNT(*) FROM sys.dm_exec_sessions s WHERE s.is_user_process = 1 AND s.database_id = db.database_id) AS ActiveUserConnections, (SELECT COUNT(*) FROM sys.dm_os_waiting_tasks w JOIN sys.dm_exec_sessions s ON w.session_id = s.session_id WHERE s.database_id = db.database_id) AS PendingRequests, (SELECT COUNT(*) FROM sys.dm_os_performance_counters WHERE counter_name = 'Processor Queue Length') AS CPUQueueLength FROM sys.databases db;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: db_health
+      ignore_errors: yes
+ 
+    - name: Check for Deadlocks
+      win_shell: |
+        try {
+          $query = "SELECT COUNT(*) AS Deadlocks FROM sys.dm_tran_locks WHERE request_status = 'WAIT';"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress
+          if (-not $result) { Write-Output '[{"Deadlocks": 0}]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Deadlocks": "Error"}]'
+        }
+      register: deadlocks
+      ignore_errors: yes
+ 
+    - name: Get SQL Agent Job Activities
+      win_shell: |
+        try {
+          $query = "SELECT j.job_id, j.name, j.enabled, MAX(h.run_status) AS last_run_status FROM msdb.dbo.sysjobs j LEFT JOIN msdb.dbo.sysjobhistory h ON j.job_id = h.job_id WHERE h.step_id = 0 GROUP BY j.job_id, j.name, j.enabled;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: job_activities
+      ignore_errors: yes
+    - name: Generate SQL Server Error for Testing
+      win_shell: |
+        try {
+          Invoke-Sqlcmd -Query "RAISERROR ('Test error for Ansible detection', 16, 1) WITH LOG;" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate
+          Write-Output '[{"Success": "Test error generated successfully"}]'
+        } catch {
+          Write-Output '[{"Error": "Failed to generate test error"}]'
+        }
+      register: test_error
+      ignore_errors: yes
+      failed_when: false
+    
+    - name: Display Test Error Result
+      debug:
+        msg: "{{ test_error.stdout }}"
+
+ 
+    - name: Check SQL Server Error Log for Issues
+      win_shell: |
+        try {
+          $query = "SELECT TOP 10 logdate, processinfo, text FROM sys.fn_get_audit_file('C:\Program Files\Microsoft SQL Server\MSSQL15.MSSQLSERVER\MSSQL\Log\*.sqlaudit', DEFAULT, DEFAULT) WHERE text LIKE '%error%' OR text LIKE '%failed%' OR text LIKE '%severity%' ORDER BY logdate DESC;"
+          $result = Invoke-Sqlcmd -Query "$query" -ServerInstance "{{ sql_instance }}" -Username "{{ sql_user }}" -Password "{{ sql_password }}" -TrustServerCertificate | ConvertTo-Json -Compress -Depth 3
+          if (-not $result) { Write-Output '[]' } else { Write-Output $result }
+        } catch {
+          Write-Output '[{"Error": "' + $_.Exception.Message + '"}]'
+        }
+      register: error_logs
+      ignore_errors: yes
+
+    - name: Get Disk Space Information
+      win_shell: |
+        Get-WmiObject Win32_LogicalDisk | 
+        Select-Object DeviceID, @{Name="Size";Expression={$_.Size}}, @{Name="FreeSpace";Expression={$_.FreeSpace}} | 
+        ConvertTo-Json
+      register: disk_space
+      ignore_errors: yes
+
+    - name: Convert Outputs to JSON
+      set_fact:
+        db_space_fact: "{{ db_space.stdout | default('[]') | from_json }}"
+        db_health_fact: "{{ db_health.stdout | default('[]') | from_json }}"
+        deadlocks_fact: "{{ deadlocks.stdout | default('[]') | from_json }}"
+        job_activities_fact: "{{ job_activities.stdout | default('[]') | from_json }}"
+        disk_space_fact: "{{ disk_space.stdout | default('[]') | from_json }}"
+        error_logs_fact: "{{ error_logs.stdout | default('[]') | from_json }}"
+    
+    - name: Display Formatted Results
+      debug:
+        msg: |
+          💾 Disk Space:
+          {% if disk_space.stdout is defined %}
+            {% set disk_data = disk_space.stdout | from_json %}
+            {% for disk in disk_data %}
+              - Volume: {{ disk.DeviceID }} | Size: {{ (disk.Size | int / 1073741824) | round(2) }} GB | Free: {{ (disk.FreeSpace | int / 1073741824) | round(2) }} GB ({{ ((disk.FreeSpace | float / disk.Size | float) * 100) | round(2) }}%)
+            {% else %}
+              - No valid disk space data available.
+            {% endfor %}
+          {% else %}
+            - No disk space data available.
+          {% endif %}
+ 
+          📊 Database Space Utilization:
+          {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
+           - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
+          {% endfor %}
+          🚨 Deadlocks:
+          {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
+           - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
+          {% else %}
+           - No deadlocks detected
+          {% endif %}
+          [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
+          🛠 SQL Server Agent Job Activities:
+          {% if job_activities_fact.name is defined and job_activities_fact.enabled is defined and job_activities_fact.last_run_status is defined %}
+           - Job: {{ job_activities_fact.name }} | Enabled: {{ job_activities_fact.enabled }} | Last Outcome: 
+             {% if job_activities_fact.last_run_status | default(-1) == 1 %}
+               Succeeded
+             {% elif job_activities_fact.last_run_status | default(-1) == 0 %}
+               Failed
+             {% elif job_activities_fact.last_run_status | default(-1) == 2 %}
+               Retry
+             {% elif job_activities_fact.last_run_status | default(-1) == 3 %}
+               Canceled
+             {% else %}
+               Unknown
+             {% endif %}
+          {% else %}
+            [❌] No job activities found or missing required fields.
+          {% endif %}
+          🩺 Database Health Check:
+          {% if db_health_fact is defined and db_health_fact | length > 0 %}
+            {% for item in db_health_fact | default([]) %}
+               - Database: {{ item.DatabaseName | default([]) }}
+                 - Status: {{ item.Status | default([]) }}
+                 - Active Requests: {{ item.ActiveRequests | default(0) }}
+                 - Active User Connections: {{ item.ActiveUserConnections | default(0) }}
+                 - Pending Requests: {{ item.PendingRequests | default(0) }}
+                 - CPU Queue Length: {{ item.CPUQueueLength | default(0) }}
+            {% endfor %}
+          {% else %}
+            [❌] No database health data available.
+          {% endif %}
+          
+          📜 SQL Server Error Log:
+          {% if error_logs_fact is defined and error_logs_fact | length > 0 %}
+            {% for item in error_logs_fact | default([]) %}
+              - Date: {{ item.logdate | default('Unknown') }}
+                - Process: {{ item.processinfo | default('Unknown') }}
+                - Message: {{ item.text | default('No message') | truncate(100) }}
+            {% endfor %}
+          {% else %}
+            [ℹ️] No errors found in SQL Server logs or error log data not available.
+          {% endif %}
+          
+    - name: Display SQL Server Issues and Troubleshooting Suggestions
+      debug:
+        msg: |
+          🩺 **Database Health Check:**
+          {% if db_health_fact is defined and db_health_fact | length > 0 %}
+            {% for item in db_health_fact %}
+              {% if item.Status != "ONLINE" %}
+                - Database: {{ item.DatabaseName }}
+                  - Status: {{ item.Status }}
+                {% if item.Status == "OFFLINE" %}
+                  🚨 **ALERT: Database {{ item.DatabaseName }} is OFFLINE!**
+                  - Possible reasons:
+                    - Manually taken offline
+                    - Storage or corruption issues
+                    - SQL Server restart
+                  - Suggested Fix:
+                    - `ALTER DATABASE {{ item.DatabaseName }} SET ONLINE;`
+                    - Check storage space and error logs
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% if db_health_fact | selectattr('Status', 'ne', 'ONLINE') | list | length == 0 %}
+              ✅ All databases are ONLINE.
+            {% endif %}
+          {% else %}
+            ❌ No database health data available.
+          {% endif %}
+          
+          💾 **Disk Space Check:**
+          {% if disk_space.stdout is defined %}
+            {% set disk_data = disk_space.stdout | from_json %}
+            {% for disk in disk_data %}
+              {% set free_pct = ((disk.FreeSpace | float / disk.Size | float) * 100) | round(2) %}
+              {% if free_pct < 10 %}
+                🚨 **ALERT: Low disk space on {{ disk.DeviceID }}!**
+                - {{ free_pct }}% free ({{ (disk.FreeSpace | int / 1073741824) | round(2) }} GB)
+                - Suggested Fix:
+                  - Clean up log files, temp files
+                  - Review database file growth
+                  - Consider adding storage
+              {% endif %}
+            {% endfor %}
+          {% else %}
+            ✅ All drives have sufficient disk space.
+          {% endif %}
+          
+          🔒 **Deadlock Check:**
+          {% if (deadlocks_fact.Deadlocks|default(0)|int) > 0 %}
+            🚨 **ALERT: {{ deadlocks_fact.Deadlocks }} deadlocks detected!**
+            - Suggested Fix:
+              - Review transaction isolation levels
+              - Optimize queries with high lock duration
+              -
