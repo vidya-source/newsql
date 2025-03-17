@@ -212,21 +212,41 @@
           {% else %}
             ❌ No database health data available.
           {% endif %}
-          
           💾 **Disk Space Check:**
-          {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item %}
-            {% set free_pct = (item.FreeSpace|float / item.Size|float * 100)|round(2) %}
-            {% if free_pct < 10 %}
-              🚨 **ALERT: Low disk space on {{ item.DeviceID }}!**
-              - {{ free_pct }}% free ({{ (item.FreeSpace|int / 1073741824)|round(2) }} GB)
-              - Suggested Fix:
-                - Clean up log files, temp files
-                - Review database file growth
-                - Consider adding storage
+          {% if disk_space_fact is mapping %}
+            {% set item = disk_space_fact %}
+            {% if 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
+              {% set free_pct = (item.FreeSpace|float / item.Size|float * 100)|round(2) %}
+              {% if free_pct < 10 %}
+                🚨 **ALERT: Low disk space on {{ item.DeviceID }}!**
+                - {{ free_pct }}% free ({{ (item.FreeSpace|int / 1073741824)|round(2) }} GB)
+                - Suggested Fix:
+                  - Clean up log files, temp files
+                  - Review database file growth
+                  - Consider adding storage
+              {% else %}
+                ✅ Drive {{ item.DeviceID }} has sufficient disk space ({{ free_pct }}% free).
+              {% endif %}
             {% endif %}
+          {% elif disk_space_fact is iterable and (disk_space_fact is not string) %}
+            {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
+              {% set free_pct = (item.FreeSpace|float / item.Size|float * 100)|round(2) %}
+              {% if free_pct < 10 %}
+                🚨 **ALERT: Low disk space on {{ item.DeviceID }}!**
+                - {{ free_pct }}% free ({{ (item.FreeSpace|int / 1073741824)|round(2) }} GB)
+                - Suggested Fix:
+                  - Clean up log files, temp files
+                  - Review database file growth
+                  - Consider adding storage
+              {% else %}
+                ✅ Drive {{ item.DeviceID }} has sufficient disk space ({{ free_pct }}% free).
+              {% endif %}
+            {% else %}
+              ❓ No disk space information available.
+            {% endfor %}
           {% else %}
-            ✅ All drives have sufficient disk space.
-          {% endfor %}
+            ❓ No disk space information available.
+          {% endif %}
           
           🔒 **Deadlock Check:**
           {% if (deadlocks_fact.Deadlocks|default(0)|int) > 0 %}
