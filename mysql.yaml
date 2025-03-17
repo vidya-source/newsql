@@ -115,21 +115,7 @@
     - name: Display Formatted Results
       debug:
         msg: |
-           💾 Disk Space:
-           {% if disk_space_fact is mapping %}
-              {% set item = disk_space_fact %}
-              {% if 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
-                - Drive {{ item.DeviceID }}: Free {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB / Total {{ (item.Size | int / 1073741824) | round(2) }} GB ({{ ((item.FreeSpace | float / item.Size | float) * 100) | round(2) }}% free)
-              {% endif %}
-            {% elif disk_space_fact is iterable and (disk_space_fact is not string) %}
-              {% for item in disk_space_fact %}
-                {% if item is mapping and 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
-                  - Drive {{ item.DeviceID }}: Free {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB / Total {{ (item.Size | int / 1073741824) | round(2) }} GB ({{ ((item.FreeSpace | float / item.Size | float) * 100) | round(2) }}% free)
-                {% endif %}
-              {% endfor %}
-            {% else %}
-              - No disk space information available
-            {% endif %}
+      
           
           📊 Database Space Utilization:
           {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
