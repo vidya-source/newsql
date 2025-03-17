@@ -313,3 +313,23 @@
           {% else %}
             ❓ No test error data available.
           {% endif %}
+          📜 **Error Log Analysis:**
+          {% if error_logs_fact is defined and error_logs_fact|length > 0 %}
+            {% set critical_error_found = false %}
+            {% for item in error_logs_fact %}
+              {% if item.text is defined and item.text|lower is search('severity: [1-9][0-9]') %}
+                {% set critical_error_found = true %}
+                🚨 **ALERT: High severity error detected!**
+                - {{ item.text|truncate(150) }}
+                - Time: {{ item.logdate }}
+                - Suggested Fix:
+                  - Review SQL Server error log details
+                  - Check for related issues in Windows Event Log
+              {% endif %}
+            {% endfor %}
+            {% if not critical_error_found %}
+              ✅ No errors found in SQL Server logs.
+            {% endif %}
+          {% else %}
+            ✅ No errors found in SQL Server logs.
+          {% endif %}
