@@ -6,13 +6,16 @@
     sql_instance: "10.112.0.10"
     sql_user: "{{ sql_user }}"
     sql_password: "{{ sql_password }}"
-    sql_port: "{{sql_port}}"
  
   tasks:
-    - name: Get Disk Space Utilization
+    - name: Get Disk Space Information
       win_shell: |
         try {
-          $disks = Get-WmiObject Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Size, FreeSpace | ConvertTo-Json -Compress -Depth 2
+          $disks = Get-WmiObject Win32_LogicalDisk | 
+            Select-Object DeviceID, VolumeName, 
+            @{Name="Size";Expression={$_.Size}}, 
+            @{Name="FreeSpace";Expression={$_.FreeSpace}} | 
+            ConvertTo-Json -Compress -Depth 2
           if (-not $disks) { Write-Output '[]' } else { Write-Output $disks }
         } catch {
           Write-Output '[{"Error": "Failed to retrieve disk info"}]'
@@ -95,11 +98,10 @@
         }
       register: error_logs
       ignore_errors: yes
-    - name: Get Disk Space Information
-      win_shell: |
-        Get-WmiObject Win32_LogicalDisk | Select-Object DeviceID, @{Name="Size";Expression={$_.Size}}, @{Name="FreeSpace";Expression={$_.FreeSpace}} | ConvertTo-Json -Compress
-      register: disk_space
-      ignore_errors: yes
+    
+    - name: Debug Disk Space Data
+      debug:
+        var: disk_space
  
     - name: Convert Outputs to JSON
       set_fact:
@@ -114,45 +116,52 @@
       debug:
         msg: |
           💾 Disk Space:
-          {% for item in disk_space_fact if item is mapping and 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
-            - Drive {{ item.DeviceID }}: Free {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB / Total {{ (item.Size | int / 1073741824) | round(2) }} GB
+          {% for item in disk_space_fact %}
+            {% if item is mapping and 'DeviceID' in item and 'FreeSpace' in item and 'Size' in item %}
+              - Drive {{ item.DeviceID }}: Free {{ (item.FreeSpace | int / 1073741824) | round(2) }} GB / Total {{ (item.Size | int / 1073741824) | round(2) }} GB ({{ ((item.FreeSpace | float / item.Size | float) * 100) | round(2) }}% free)
+            {% endif %}
           {% else %}
+            - No disk space information available
           {% endfor %}
           
- 
           📊 Database Space Utilization:
           {% for item in db_space_fact | default([]) if item.DatabaseName is defined and item.SizeMB is defined %}
            - {{ item.DatabaseName }}: {{ item.SizeMB }} MB
           {% endfor %}
+          
           🚨 Deadlocks:
           {% if (deadlocks_fact.Deadlocks | default(0) | int) > 0 %}
            - {{ deadlocks_fact.Deadlocks }} deadlocks detected!
           {% else %}
            - No deadlocks detected
           {% endif %}
+          
           [ℹ️] Job activities query returned {{ job_activities_fact | default([]) | length }} rows.
           🛠 SQL Server Agent Job Activities:
-          {% if job_activities_fact.name is defined and job_activities_fact.enabled is defined and job_activities_fact.last_run_status is defined %}
-           - Job: {{ job_activities_fact.name }} | Enabled: {{ job_activities_fact.enabled }} | Last Outcome: 
-             {% if job_activities_fact.last_run_status | default(-1) == 1 %}
-               Succeeded
-             {% elif job_activities_fact.last_run_status | default(-1) == 0 %}
-               Failed
-             {% elif job_activities_fact.last_run_status | default(-1) == 2 %}
-               Retry
-             {% elif job_activities_fact.last_run_status | default(-1) == 3 %}
-               Canceled
-             {% else %}
-               Unknown
-             {% endif %}
+          {% if job_activities_fact | length > 0 %}
+            {% for job in job_activities_fact %}
+              - Job: {{ job.name }} | Enabled: {{ job.enabled }} | Last Outcome: 
+                {% if job.last_run_status | default(-1) == 1 %}
+                  Succeeded
+                {% elif job.last_run_status | default(-1) == 0 %}
+                  Failed
+                {% elif job.last_run_status | default(-1) == 2 %}
+                  Retry
+                {% elif job.last_run_status | default(-1) == 3 %}
+                  Canceled
+                {% else %}
+                  Unknown
+                {% endif %}
+            {% endfor %}
           {% else %}
             [❌] No job activities found or missing required fields.
           {% endif %}
+          
           🩺 Database Health Check:
           {% if db_health_fact is defined and db_health_fact | length > 0 %}
             {% for item in db_health_fact | default([]) %}
-               - Database: {{ item.DatabaseName | default([]) }}
-                 - Status: {{ item.Status | default([]) }}
+               - Database: {{ item.DatabaseName | default('Unknown') }}
+                 - Status: {{ item.Status | default('Unknown') }}
                  - Active Requests: {{ item.ActiveRequests | default(0) }}
                  - Active User Connections: {{ item.ActiveUserConnections | default(0) }}
                  - Pending Requests: {{ item.PendingRequests | default(0) }}
@@ -258,39 +267,4 @@
             {% endif %}
           {% else %}
             ✅ No errors found in SQL Server logs.
-          {% endif %}
-
-    - name: Check if SQL Server port is accessible
-      win_shell: |
-        try {
-          $port = "{{sql_port}}"  # Default SQL Server port
-          $connection = New-Object System.Net.Sockets.TcpClient
-          $result = $connection.BeginConnect("{{ sql_instance }}", $port, $null, $null)
-          $wait = $result.AsyncWaitHandle.WaitOne(1000, $false)
-          if ($wait) {
-            $connection.EndConnect($result)
-            Write-Output '[{"Status": "Success", "Message": "SQL Server port is accessible"}]'
-          } else {
-            Write-Output '[{"Status": "Failed", "Message": "SQL Server port is not accessible"}]'
-          }
-          $connection.Close()
-        } catch {
-          Write-Output '[{"Status": "Error", "Message": "' + $_.Exception.Message + '"}]'
-        }
-      register: port_check
-      ignore_errors: yes
-    
-    - name: Display SQL Server Port Check Results
-      debug:
-        msg: |
-          📡 SQL Server Port Check:
-          {% if port_check.stdout is defined %}
-            {% set port_status = port_check.stdout | from_json %}
-            {% if port_status[0].Status == "Success" %}
-              ✅ {{ port_status[0].Message }}
-            {% else %}
-              🚨 {{ port_status[0].Message }}
-            {% endif %}
-          {% else %}
-            ❌ Port check data unavailable
           {% endif %}
